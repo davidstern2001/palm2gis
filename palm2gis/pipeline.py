@@ -29,6 +29,7 @@ from .steps.georef import process_static_driver
 from .steps.voxel import stage_voxel
 from .steps.surfaces import stage_surfaces
 from .steps.wind import stage_wind
+from .steps.canopy import stage_canopy
 
 log = get_logger()
 
@@ -40,10 +41,11 @@ STAGE_LABELS = {
     "voxel": "Writing the ArcGIS voxel NetCDF",
     "surfaces": "Converting the surface output",
     "wind": "Sampling wind vectors",
+    "canopy": "Converting the plant canopy",
 }
 
 STAGE_FUNCS = {"voxel": stage_voxel, "surfaces": stage_surfaces,
-               "wind": stage_wind}
+               "wind": stage_wind, "canopy": stage_canopy}
 
 
 # ------------------------------
@@ -70,6 +72,17 @@ def stage_outputs(cfg, stage):
         return out
     if stage == "wind":
         return [cfg.out_path(cfg["wind"]["file_to"])]
+    if stage == "canopy":
+        cn = cfg["canopy"]
+        out = []
+        if cn["write_lai"]:
+            out.append(cfg.out_path("{}lai.tif".format(cn["prefix"])))
+        if cn["write_canopy_height"]:
+            out.append(cfg.out_path(
+                "{}canopy_height.tif".format(cn["prefix"])))
+        if cn["write_volume"]:
+            out.append(cfg.out_path("{}lad_3d.nc".format(cn["prefix"])))
+        return out
     return []
 
 
@@ -82,7 +95,8 @@ def print_plan(cfg, stages):
         if not cfg[stage]["enabled"]:
             log.info(f"  {stage}: disabled")
             continue
-        log.info(f"  {stage}: from {cfg[stage]['file_from']}")
+        log.info(f"  {stage}: from "
+                 f"{cfg[stage]['file_from'] or cfg['domain']['static_driver']}")
         for path in stage_outputs(cfg, stage):
             if path.exists() and not cfg.overwrite:
                 action = "keep (exists)"
@@ -116,7 +130,11 @@ def main(argv=None):
                     help="also append the log to this file (uncoloured, "
                          "always dated); default <output_dir>/palm2gis.log, "
                          "disable with --log-file ''")
-    ap.add_argument("--version", action="store_true",
+    # argparse's own "version" action so it works WITHOUT -c: the flag is
+    # useless if it still demands a config file.
+    from . import __version__ as _ver
+    ap.add_argument("--version", action="version",
+                    version="palm2gis {}".format(_ver),
                     help="print the palm2gis version and exit")
     ap.add_argument("--ignore-state", action="store_true",
                     help="skip purely on file existence, ignoring the "
@@ -128,9 +146,6 @@ def main(argv=None):
     verbosity = "debug" if args.verbose else ("warning" if args.quiet
                                               else "info")
     from . import __version__
-    if args.version:
-        print(f"palm2gis {__version__}")
-        return 0
 
     setup_logging(verbosity, args.log_datetime, args.log_file or None)
     log.info(f"palm2gis {__version__}")
@@ -200,11 +215,16 @@ def main(argv=None):
         # Record the config behind whatever that stage actually produced,
         # and stamp each file so it can be identified on its own later.
         from .provenance import stamp_file
+        # `canopy` reads the static driver when it has no file_from of its
+        # own, so the source is resolved only once it is known to exist.
+        src_cfg = (cfg[stage].get("file_from")
+                   or (cfg["domain"]["static_driver"]
+                       if stage == "canopy" else None))
         for path in stage_outputs(cfg, stage):
             if Path(path).exists() and cfg.was_written(path):
                 cfg.note_written(path, stage)
                 stamp_file(cfg, path, stage,
-                           src=cfg.resolve(cfg[stage].get("file_from")))
+                           src=cfg.resolve(src_cfg) if src_cfg else None)
         cfg._state.save()
 
     progress("palm2gis finished OK")

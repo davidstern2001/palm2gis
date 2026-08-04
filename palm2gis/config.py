@@ -1,6 +1,8 @@
 """YAML config loading + defaults for palm2gis."""
 
 import copy
+import os
+from contextlib import contextmanager
 from pathlib import Path
 
 import yaml
@@ -12,7 +14,7 @@ log = get_logger()
 # ------------------------------
 # 1. STAGE REGISTRY
 # ------------------------------
-STAGES = ("voxel", "surfaces", "wind")
+STAGES = ("voxel", "surfaces", "wind", "canopy")
 
 # ------------------------------
 # 2. DEFAULTS
@@ -151,6 +153,23 @@ DEFAULTS = {
     # surface_pressure from your _p3d namelist, reduced to the domain base
     # if it refers to sea level.
     "surface_pressure": 101325.0,
+    "canopy": {
+        "enabled": False,
+        # Where `lad` lives - the static driver, unless overridden.
+        "file_from": None,
+        "prefix": "palm_",
+        # LAD integrated over the column -> leaf area index [m2/m2].
+        "write_lai": True,
+        # Highest level with LAD above lad_threshold, in metres above the
+        # LOCAL terrain (a canopy height model). Derived from LAD itself,
+        # so it does not need buildings_2d.
+        "write_canopy_height": True,
+        "lad_threshold": 0.01,
+        # LAD lifted from height-above-terrain onto absolute heights, as a
+        # CF NetCDF: the ArcGIS voxel / QGIS mesh equivalent of what
+        # paraview_vis produced for ParaView.
+        "write_volume": False,
+    },
     "stages": list(STAGES),
 }
 
@@ -273,6 +292,32 @@ class Config:
     def was_written(self, path):
         """True when this run actually (re)wrote `path`."""
         return Path(path).resolve() in getattr(self, "_written", set())
+
+    @contextmanager
+    def atomic_output(self, path, tag=""):
+        """Write to a temporary file, move it into place only on success.
+
+        Yields the temporary path to write to. A stage that raises - or a
+        run that is interrupted - therefore leaves no half-written output
+        behind that a later rerun would mistake for a finished product
+        (the skip logic goes by file existence, so a truncated NetCDF
+        would be kept silently). The temporary sits in the destination
+        directory so the final move stays on one filesystem and is atomic.
+        """
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(path.name + ".partial")
+        if tmp.exists():
+            tmp.unlink()
+        try:
+            yield tmp
+        except BaseException:
+            if tmp.exists():
+                tmp.unlink()
+                debug("{}discarded the partial {}",
+                      "[{}] ".format(tag) if tag else "", tmp.name)
+            raise
+        os.replace(tmp, path)
 
     def note_written(self, path, tag=""):
         """Record which config produced `path` (see palm2gis.state)."""

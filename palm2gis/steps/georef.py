@@ -131,24 +131,39 @@ TIME_KEYS = {
 def read_p3d(path):
     """Parse every `key = value` numeric setting from a PALM namelist.
 
-    Uses a regex, so 'nx=199,' and 'nx = 199 ,' both work (the
-    whitespace-splitting of the original tool did not). Values that are not
-    plain numbers (strings, arrays, logicals) are skipped - only the scalar
-    numeric settings are of interest here.
+    Assignments are matched wherever they occur, not only when they are
+    alone on their line: PALM namelists routinely pack several onto one
+    line, e.g.
+
+        nx = 511, ny = 607, nz = 512,
+        dx = 1.0, dy = 1.0, dz = 1.0,
+
+    An earlier version anchored the pattern to whole lines and so read
+    nothing at all from those two.
+
+    Comment lines (`!`) are stripped first, so a commented-out or
+    documentary value cannot override the real one. Values that are not
+    plain numbers - strings, arrays, logicals - are skipped; only the
+    scalar numeric settings are of interest here.
     """
-    text = open(path, "r").read()
     out = {}
-    for m in re.finditer(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*"
-                         r"([-+]?[0-9]*\.?[0-9]+(?:[eEdD][-+]?[0-9]+)?)\s*,?\s*$",
-                         text, re.MULTILINE):
-        key, raw = m.group(1).lower(), m.group(2).replace("d", "e").replace(
-            "D", "e")
-        try:
-            val = float(raw)
-        except ValueError:
-            continue
-        out[key] = int(val) if key.startswith("n") and val.is_integer() \
-            else val
+    for raw_line in open(path, "r"):
+        line = raw_line.split("!", 1)[0]          # drop trailing comments
+        for m in re.finditer(
+                r"([A-Za-z_][A-Za-z0-9_]*)\s*=\s*"
+                r"([-+]?[0-9]*\.?[0-9]+(?:[eEdD][-+]?[0-9]+)?)\s*(?=[,\s]|$)",
+                line):
+            key = m.group(1).lower()
+            raw = m.group(2).replace("d", "e").replace("D", "e")
+            try:
+                val = float(raw)
+            except ValueError:
+                continue
+            # First occurrence wins: PALM applies the first namelist block,
+            # and a later &..._parameters block may reuse a name.
+            if key not in out:
+                out[key] = (int(val) if key.startswith("n")
+                            and val.is_integer() else val)
     return out
 
 

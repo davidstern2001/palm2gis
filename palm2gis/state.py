@@ -36,6 +36,7 @@ _STAGE_KEYS = {
     "voxel":    ("domain", "bounds", "crs", "celsius", "voxel"),
     "surfaces": ("domain", "bounds", "crs", "celsius", "surfaces"),
     "wind":     ("domain", "bounds", "crs", "wind"),
+    "canopy":   ("domain", "bounds", "crs", "canopy"),
 }
 
 

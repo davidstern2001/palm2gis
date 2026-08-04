@@ -420,6 +420,39 @@ def verify_outputs(out):
     check(rows and rows[0][0] == "wind" and rows[0][1] == 1,
           "qgis: style embedded in the GeoPackage as default", failures)
 
+    # -- p3d namelist parsing ----------------------------------------------
+    # PALM packs several assignments onto one line, and the header comment
+    # repeats the grid in prose - both must be handled.
+    from palm2gis.steps.georef import infer_time_params, read_p3d
+    nml = out / "_p3d_probe"
+    nml.write_text(
+        "!-- Grid:   512 x 608 x 512 cells  (nx=511, ny=607, nz=999)\n"
+        "!-- Spacing: dx=dy=dz=9m\n"
+        "&initialization_parameters\n"
+        "         nx = 511, ny = 607, nz = 512,\n"
+        "         dx = 1.0, dy = 1.0, dz = 1.0,\n"
+        "/\n"
+        "&runtime_parameters\n"
+        "    dt_data_output_av = 600.0,\n"
+        "    dt_dosurf_av      = 3600.0,\n"
+        "    skip_time_dosurf_av = 0.0,\n"
+        "/\n")
+    p3d = read_p3d(nml)
+    check(p3d.get("nz") == 512 and p3d.get("dz") == 1.0,
+          "p3d: several assignments on one line are all read", failures)
+    check(p3d.get("nx") == 511 and p3d.get("dx") == 1.0,
+          "p3d: grid settings parsed from a packed line", failures)
+
+    class _G:
+        pass
+
+    gg = _G()
+    gg.p3d = p3d
+    check(infer_time_params(gg, "voxel", "x_av_3d.nc")[0] == 600.0
+          and infer_time_params(gg, "surfaces", "x_av_surf.nc")[0] == 3600.0,
+          "p3d: 3D and surface intervals inferred separately", failures)
+    nml.unlink()
+
     # -- canopy (LAD) ------------------------------------------------------
     # 3 x 3 columns, 3 levels of LAD = 0.5 on dz_lad = 2 m.
     with rasterio.open(out / "test_lai.tif") as r:

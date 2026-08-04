@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.11.1
+
+**Correctness**
+
+- The `_p3d` parser read nothing from lines holding more than one
+  assignment. PALM namelists routinely pack them, e.g.
+
+      nx = 511, ny = 607, nz = 512,
+      dx = 1.0, dy = 1.0, dz = 1.0,
+
+  and 0.7.0 anchored the pattern to whole lines when it was generalised
+  from six fixed keys to every setting - so those two lines matched
+  nothing and a run with a valid namelist failed with "nz/dz not found in
+  p3d and not set in config". Assignments are now matched wherever they
+  occur.
+- Comments are stripped before parsing, so the descriptive header PALM
+  writes (`!-- Grid: ... (nx=511, ny=607, nz=512)`) cannot override the
+  real settings, and the first occurrence of a key wins.
+
 ## 0.11.0
 
 **Correctness**
