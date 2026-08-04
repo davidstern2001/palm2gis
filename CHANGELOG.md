@@ -1,5 +1,45 @@
 # Changelog
 
+## 0.11.0
+
+**Correctness**
+
+- `Config.atomic_output()` was called by the voxel stage but never
+  existed, so `stage voxel failed: 'Config' object has no attribute
+  'atomic_output'` on every run - the stage could not complete at all, and
+  `test.py` failed at the first check. Implemented as intended: the output
+  is written to a `.partial` file in the destination directory and moved
+  into place only on success, so an interrupted or failing run leaves no
+  truncated file behind for the existence-based skip logic to keep.
+- `--version` required `-c/--config` to be given as well, so it could
+  never be used on its own. It is now argparse's own version action and
+  exits immediately.
+
+**Features**
+
+- New `canopy` stage, the last part of `paraview_vis` that had no
+  counterpart here. PALM stores `lad` on `zlad` - height ABOVE THE LOCAL
+  TERRAIN - and the stage serves it three ways:
+  - `<prefix>lai.tif`, LAD integrated over the column (leaf area index);
+  - `<prefix>canopy_height.tif`, the highest level above `lad_threshold`
+    in metres above the local terrain. Derived from LAD itself, so unlike
+    a buildings-based height it works on static drivers that leave
+    `buildings_2d` empty;
+  - `<prefix>lad_3d.nc` (optional), LAD lifted onto absolute heights - the
+    ArcGIS voxel / QGIS mesh equivalent of what paraview_vis rendered in
+    ParaView. Respects the `bounds` z-cut, which the original ignored.
+- The original `tree_gen.py` used `np.int`, removed in NumPy 1.24, so it
+  raises AttributeError on any current install; the per-column Python loop
+  over the whole domain is replaced by a vectorised lift.
+
+**Tests**
+
+- The synthetic dataset gains a canopy block on sloping terrain, and
+  checks that LAI equals LAD x depth, that the canopy height matches, that
+  the volume holds every canopy cell, and that the terrain lift spreads
+  one canopy over several absolute levels - which is the whole point of
+  the lift and what a naive copy would get wrong.
+
 ## 0.10.0
 
 **Logging**

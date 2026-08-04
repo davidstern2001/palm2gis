@@ -99,6 +99,19 @@ def build_dataset(root):
                               fill_value=-9999.0)
         b[:] = np.ma.masked_where(bld == 0.0, bld)
 
+        # Plant canopy: a 3-level tree block on flat-ish ground, stored on
+        # zlad = height ABOVE TERRAIN (as PALM does), away from the
+        # building so the two do not overlap.
+        nzlad = 3
+        nc.createDimension("zlad", nzlad)
+        nc.createVariable("zlad", "f4", ("zlad",))[:] = \
+            np.arange(DZ / 2.0, nzlad * DZ, DZ)[:nzlad]
+        lad = np.zeros((nzlad, NY, NX), dtype="f4")
+        lad[:, 3:6, 3:6] = 0.5           # 3 x 3 columns, 3 levels deep
+        lv = nc.createVariable("lad", "f4", ("zlad", "y", "x"),
+                               fill_value=-9999.0)
+        lv[:] = np.ma.masked_where(lad == 0.0, lad)
+
     # -- 3D output (staggered u/v/w + theta, terrain masked) ---------------
     kmask = np.zeros((NZ, NY, NX), dtype=bool)
     for j in range(NY):
@@ -197,6 +210,10 @@ surfaces:
   variables: ["theta_surface"]
   derive_ta: true
   write_all_elements_gpkg: true
+canopy:
+  enabled: true
+  prefix: test_
+  write_volume: true
 wind:
   enabled: true
   file_from: test_3d
@@ -402,6 +419,34 @@ def verify_outputs(out):
     con.close()
     check(rows and rows[0][0] == "wind" and rows[0][1] == 1,
           "qgis: style embedded in the GeoPackage as default", failures)
+
+    # -- canopy (LAD) ------------------------------------------------------
+    # 3 x 3 columns, 3 levels of LAD = 0.5 on dz_lad = 2 m.
+    with rasterio.open(out / "test_lai.tif") as r:
+        v = r.read(1)[r.read(1) != r.nodata]
+        check(v.size == 9 and _np_thermo.allclose(v, 0.5 * 3 * DZ),
+              f"canopy: LAI = LAD x depth ({v[0]:.2f} over {v.size} cells)",
+              failures)
+        check(r.crs is not None, "canopy: LAI raster carries a CRS",
+              failures)
+    with rasterio.open(out / "test_canopy_height.tif") as r:
+        v = r.read(1)[r.read(1) != r.nodata]
+        check(_np_thermo.allclose(v, 3 * DZ),
+              f"canopy: canopy height = {v[0]:.1f} m above terrain",
+              failures)
+    with Dataset(out / "test_lad_3d.nc") as nc:
+        nc.set_auto_mask(False)
+        lad = nc["lad"][:]
+        check(int((lad > 0).sum()) == 27,
+              "canopy: LAD volume holds every canopy cell", failures)
+        # the test terrain slopes across the tree block, so the SAME
+        # canopy must land on different absolute levels per column -
+        # which is exactly what the height-above-terrain lift is for
+        zocc = _np_thermo.asarray(nc["z"][:])[
+            (lad > 0).any(axis=(1, 2))]
+        check(zocc.size > 3,
+              f"canopy: terrain lift spreads the canopy over {zocc.size} "
+              f"absolute levels", failures)
 
     # -- wind --------------------------------------------------------------
     wind = gpd.read_file(out / "test_wind.gpkg", layer="wind")

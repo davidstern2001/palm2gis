@@ -31,6 +31,7 @@ Every run first reads the **static driver** (and optionally the `_p3d` namelist 
 |---|-------|------------------|
 | 1 | `voxel` | CF-compliant NetCDF for the ArcGIS Pro Voxel Layer — destaggered `u`/`v`/`w` plus chosen scalars on `(time, z, y, x)`, terrain and building cells as NoData |
 | 2 | `surfaces` | One multiband GeoTIFF per surface variable (topmost roof/ground element per column, band = timestep) and the wall elements as vertical PolygonZ quads in a time-enabled GeoPackage |
+| 4 | `canopy` | Plant canopy from the static driver: leaf area index and canopy height rasters, and optionally the LAD volume lifted onto absolute heights |
 | 3 | `wind` | A GeoPackage point layer with `u`, `v`, `speed`, `dir_met` per timestep, sampled at configurable heights above the local surface |
 
 Each stage is enabled/disabled in its own config section; the order (and the default for `--stages`) is the `stages:` list.

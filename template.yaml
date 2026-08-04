@@ -209,5 +209,28 @@ qgis_styles: true
 # you compare with measurements. Take it from your _p3d surface_pressure.
 surface_pressure: 101325.0
 
+# --------------------------------------------------------------
+# Stage: canopy - plant canopy (LAD) from the static driver
+# --------------------------------------------------------------
+# PALM stores `lad` on the `zlad` axis, which is height ABOVE THE LOCAL
+# TERRAIN. The rasters below need no lift; the volume is lifted onto
+# absolute heights the way paraview_vis did for ParaView.
+canopy:
+  enabled: false
+  file_from: null                     # null -> the static driver
+  prefix: project_
+  write_lai: true                     # <prefix>lai.tif - LAD integrated
+                                      # over the column [m2/m2]
+  write_canopy_height: true           # <prefix>canopy_height.tif - highest
+                                      # level with LAD > lad_threshold, in
+                                      # metres above the LOCAL terrain.
+                                      # Derived from LAD itself, so it does
+                                      # not need buildings_2d.
+  lad_threshold: 0.01
+  write_volume: false                 # <prefix>lad_3d.nc - LAD on absolute
+                                      # heights (ArcGIS voxel / QGIS mesh).
+                                      # Respects the bounds z-cut, so raise
+                                      # bounds.zmax above the tree tops.
+
 # Stage order; also the default for the --stages CLI flag.
-stages: [voxel, surfaces, wind]
+stages: [voxel, surfaces, wind, canopy]
