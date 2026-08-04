@@ -2,7 +2,7 @@
 
 **PALM outputs → ArcGIS Pro / QGIS layers** — companion to `palm_preproc` and `palm_postproc`.
 
-From a PALM run's static driver and NetCDF outputs, `palm2gis` produces georeferenced GIS layers: a CF-compliant NetCDF that ArcGIS Pro opens directly as a 3D Voxel Layer (destaggered velocities and scalars, terrain as NoData), surface temperatures as a top-view raster time series plus 3D wall polygons, and pedestrian-level wind vectors sampled at heights above the local surface. Every layer is written in absolute projected coordinates taken from the static driver's `origin_x`/`origin_y`, so it lands in the right place on the map with no manual shifting. It is a GIS-oriented re-implementation of the `paraview_vis` tool from `palm_postprocessing` — same configuration concepts (`domain`, `bounds` subdomain cut, timestep window), different target software.
+From a PALM run's static driver and NetCDF outputs, `palm2gis` produces georeferenced GIS layers: a CF-compliant NetCDF that ArcGIS Pro opens directly as a 3D Voxel Layer (destaggered velocities and scalars, terrain as NoData), surface temperatures as a top-view raster time series plus 3D wall polygons, and pedestrian-level wind vectors sampled at heights above the local surface. Every layer is written in absolute projected coordinates taken from the static driver's `origin_x`/`origin_y`, so it lands in the right place on the map with no manual shifting. It began as an adaptation of `paraview_vis`, a PALM visualisation script by [Martin Bureš](https://www.cs.cas.cz/staff/buresm/en) (Institute of Computer Science, Czech Academy of Sciences), and keeps its configuration concepts (`domain`, `bounds` subdomain cut, timestep window) while targeting GIS software rather than ParaView. See [Origins and attribution](#origins-and-attribution).
 
 ---
 
@@ -18,6 +18,7 @@ From a PALM run's static driver and NetCDF outputs, `palm2gis` produces georefer
   - [wind — vectors at heights above ground](#wind--vectors-at-heights-above-ground)
 - [Command-line reference](#command-line-reference)
 - [Things worth knowing](#things-worth-knowing)
+- [Origins and attribution](#origins-and-attribution)
 - [Authors](#authors)
 
 ---
@@ -201,7 +202,7 @@ python run_palm2gis.py -c CONFIG [options]
 
 ## Things worth knowing
 
-**The original destaggering had a bug.** `paraview_vis/utils/operation_3d.py` averaged staggered components as `(var[..., 1:] + var[..., -1:]) / 2` — the `-1:` broadcasts the *last* slice against everything, so every interpolated value was averaged with the domain-edge column instead of its neighbouring face. `palm2gis` uses the correct `0.5 * (v[..., :-1] + v[..., 1:])`. Interpolated NetCDFs produced by the old tool carry the wrong velocities.
+**The original destaggering had a bug.** The `paraview_vis` `utils/operation_3d.py` averaged staggered components as `(var[..., 1:] + var[..., -1:]) / 2` — the `-1:` broadcasts the *last* slice against everything, so every interpolated value was averaged with the domain-edge column instead of its neighbouring face. `palm2gis` uses the correct `0.5 * (v[..., :-1] + v[..., 1:])`. Interpolated NetCDFs produced by the old tool carry the wrong velocities.
 
 **The walls GeoPackage grows as n_walls × n_times rows.** For a large domain with many timesteps that can get heavy; trim `bounds` and `n_times`, or disable it with `surfaces.write_walls_gpkg: false`. A per-building aggregation (mean wall value per footprint) is a possible future lighter alternative.
 
@@ -221,7 +222,24 @@ Since 0.10.0 the skip is no longer by file existence alone. A `.palm2gis_state.j
 
 ---
 
+## Origins and attribution
+
+`palm2gis` is derived from `paraview_vis`, a PALM visualisation script by
+[Martin Bureš](https://www.cs.cas.cz/staff/buresm/en) at the Institute of
+Computer Science of the Czech Academy of Sciences. The domain-georeferencing
+approach and the general shape of the 3D conversion come from that work, as do
+the configuration concepts this tool kept (`domain`, the `bounds` subdomain
+cut, the timestep window). The logging style follows PALM-GeM's (Martin Bureš,
+Jaroslav Rešler).
+
+The code has since been restructured into a configurable, stage-based pipeline
+writing GIS-native formats rather than ParaView-oriented ones. One behavioural
+difference matters for anyone holding older results: the destaggering has been
+corrected, and interpolated NetCDFs produced by the earlier script carry
+incorrect velocities — see [Things worth knowing](#things-worth-knowing) for
+the detail.
+
 ## Authors
 
-David Stern (IPR Praha / KFA MFF UK) — design, PALM workflow.
-Re-implementation of the `paraview_vis` preprocessing tool (`palm_postprocessing`, ICS CAS) for GIS targets.
+David Stern (IPR Praha / KFA MFF UK) — design, PALM workflow, this
+implementation.
