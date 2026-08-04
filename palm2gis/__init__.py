@@ -1,0 +1,9 @@
+"""palm2gis - PALM outputs -> ArcGIS Pro / QGIS layers.
+
+Stages:
+    voxel -> surfaces -> wind
+
+See template.yaml and README.md for usage.
+"""
+
+__version__ = "0.10.0"

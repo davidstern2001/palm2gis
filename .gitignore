@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+.DS_Store
+
+# ------------------------------
+# palm2gis run artefacts
+# ------------------------------
+.palm2gis_state.json
+palm2gis.log
+*.palm2gis.json

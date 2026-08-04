@@ -1,0 +1,39 @@
+# ==============================================================
+# Minimal project config.
+# Everything not shown here comes from the hardcoded defaults,
+# applied automatically with a deep merge. See template.yaml for the full
+# reference of every available setting.
+# ==============================================================
+
+project:
+  name: example_minimal
+  root: /storage/data/palm/example
+  output_dir: ./gis
+
+domain:
+  static_driver: INPUT/example_static_N02
+  p3d: INPUT/example_p3d_N02          # or: nz + dz explicitly
+
+voxel:
+  enabled: true
+  file_from: OUTPUT/DATA_3D_NETCDF_N02
+  file_to: example_voxel.nc
+  scalars: ["theta"]
+
+surfaces:
+  enabled: true
+  file_from: OUTPUT/SURFACE_DATA_NETCDF_N02
+  prefix: example_
+  variables: ["theta_surface"]
+
+wind:
+  enabled: true
+  file_from: OUTPUT/DATA_3D_NETCDF_N02
+  file_to: example_wind.gpkg
+  heights_agl: [2.0]
+  stride: 4
+
+# Everything else - CRS, bounds (default: no cut, all timesteps), drop_k0,
+# celsius (default false = kelvin), the stage list - comes from the
+# defaults. Add any key from template.yaml here only if THIS project
+# needs to differ.
