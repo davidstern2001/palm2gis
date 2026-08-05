@@ -277,6 +277,18 @@ def verify_outputs(out):
     check(abs(exner_profile(zz, th_const, p_surface=1.0e5)[0] - 1.0) < 1e-12,
           "thermo: Exner = 1 at the reference pressure", failures)
 
+    # p_surface applies at z = 0, not at the lowest OUTPUT level: a profile
+    # over a cut starting at 100 m must agree with the full-column one there,
+    # not repeat the surface value. Up to 0.12.0 the whole column was offset
+    # by g/cp * z[0] - 1 K for this cut.
+    cut = _np_thermo.arange(100.0, 1001.0, 50.0)
+    pi_cut = exner_profile(cut, _np_thermo.full_like(cut, 300.0),
+                           p_surface=1.0e5)
+    pi_full = exner_profile(zz, th_const, p_surface=1.0e5)
+    check(abs(pi_cut[0] - pi_full[2]) < 1e-12,
+          "thermo: Exner profile is anchored at z = 0, not at the cut base",
+          failures)
+
     # derived temperature must reach EVERY surface product, not just one
     with Dataset(out / "test_surface_2d.nc") as nc:
         check("t_surf" in nc.variables,

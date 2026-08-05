@@ -231,12 +231,20 @@ celsius: false
 # on the vector layers. ArcGIS ignores these files.
 qgis_styles: true
 
-# Pressure [Pa] at the model's z = 0 level (the domain base, at origin_z -
-# NOT sea level). Used only when deriving air temperature. It matters: T
-# scales as (p/p0)^0.286, so a 10 hPa error shifts the result by ~0.85 K -
-# a constant offset, harmless for patterns and gradients, but relevant if
-# you compare with measurements. Take it from your _p3d surface_pressure.
-surface_pressure: 101325.0
+# Pressure at the model's z = 0 level (the domain base, at origin_z - NOT
+# sea level). Used only when deriving air temperature.
+#
+# Leave it null and it is read from the p3d: PALM's own `surface_pressure`,
+# which the NAMELIST GIVES IN hPa and which is converted to Pa here. Set it
+# here only to override the namelist, or when there is no p3d - and then in
+# PASCALS.
+#
+# It matters: T scales as (p/p0)^0.286, so a 10 hPa error shifts the result
+# by ~0.85 K. That is a constant offset, harmless for patterns and
+# gradients, but relevant against measurements. The 101325 Pa fallback is
+# the standard atmosphere at SEA LEVEL and is wrong for any elevated
+# domain, which is why the p3d is preferred.
+surface_pressure: null
 
 # --------------------------------------------------------------
 # Stage: canopy - plant canopy (LAD) from the static driver

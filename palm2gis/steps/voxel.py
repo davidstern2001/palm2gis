@@ -24,8 +24,8 @@ from netCDF4 import Dataset
 
 from ..log import debug, get_logger, info, warning
 from .georef import check_raw_input, select_times
-from .thermo import exner_profile, is_temperature, kelvin_to_celsius, \
-    theta_to_ta
+from .thermo import LAPSE_DRY, exner_profile, is_temperature, \
+    kelvin_to_celsius, theta_to_ta
 
 log = get_logger()
 
@@ -207,12 +207,42 @@ def stage_voxel(cfg, grid):
                 theta_bar = np.ma.filled(th0.mean(axis=(1, 2)), np.nan)
                 pi = exner_profile(z_out, theta_bar,
                                    p_surface=cfg["surface_pressure"])
-                th_ref = float(np.nanmean(theta_bar))
-                info("[voxel] Exner {:.5f}..{:.5f} over z {:.0f}..{:.0f} m "
-                     "(p_s = {:.0f} Pa): ta - theta = {:+.2f}..{:+.2f} K",
-                     pi[0], pi[-1], z_out[0], z_out[-1],
-                     cfg["surface_pressure"],
-                     (pi[0] - 1.0) * th_ref, (pi[-1] - 1.0) * th_ref)
+                # What the conversion actually DOES to the numbers, per
+                # level: ta - theta = theta * (Pi - 1).
+                off = np.asarray(theta_bar) * (pi - 1.0)
+                o0, o1 = float(off[0]), float(off[-1])
+                z0, z1 = float(z_out[0]), float(z_out[-1])
+                if o0 >= 0.0 and o1 >= 0.0:
+                    info("[voxel] deriving ta from theta: ta comes out "
+                         "{:.2f} K warmer at z = {:.0f} m, {:.2f} K warmer "
+                         "at {:.0f} m.", o0, z0, o1, z1)
+                elif o0 <= 0.0 and o1 <= 0.0:
+                    info("[voxel] deriving ta from theta: ta comes out "
+                         "{:.2f} K cooler at z = {:.0f} m, {:.2f} K cooler "
+                         "at {:.0f} m.", -o0, z0, -o1, z1)
+                else:
+                    info("[voxel] deriving ta from theta: ta - theta = "
+                         "{:+.2f} K at z = {:.0f} m, {:+.2f} K at {:.0f} m.",
+                         o0, z0, o1, z1)
+
+                # The offset must decay with height at the dry adiabatic
+                # rate whatever the stratification, because theta * dPi/dz
+                # = -g/cp. A departure means the profile, p_surface or the
+                # height axis is wrong - worth saying so rather than
+                # writing plausible-looking temperatures.
+                lapse = (o0 - o1) / (z1 - z0) * 1000.0 if z1 > z0 else None
+                if lapse is not None and abs(lapse - LAPSE_DRY) > 0.5:
+                    warning("[voxel] the theta -> ta offset changes at "
+                            "{:.1f} K/km, but a constant-theta column is a "
+                            "dry adiabat and must give {:.1f} K/km - check "
+                            "surface_pressure and the z axis.",
+                            lapse, LAPSE_DRY)
+                elif lapse is not None:
+                    debug("[voxel] offset decays at {:.1f} K/km (dry "
+                          "adiabat {:.1f}); Exner {:.5f}..{:.5f} from "
+                          "p_s = {:.0f} Pa at z = 0.",
+                          lapse, LAPSE_DRY, pi[0], pi[-1],
+                          cfg["surface_pressure"])
                 pi = pi[:, None, None]
 
             celsius = bool(cfg["celsius"])

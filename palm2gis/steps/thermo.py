@@ -43,6 +43,10 @@ CP = 1005.0              # specific heat of dry air at constant pressure
 RD = 287.0               # gas constant for dry air [J/(kg K)]
 KAPPA = RD / CP          # ~0.286
 P0 = 1.0e5               # reference pressure [Pa]
+# Dry adiabatic lapse rate [K/km]. A constant-theta column IS a dry
+# adiabat, so the theta -> ta offset must shrink with height at this rate
+# whatever the stratification - a cheap check that the profile is sane.
+LAPSE_DRY = G / CP * 1000.0      # ~9.76 K/km
 
 
 # ------------------------------
@@ -69,8 +73,13 @@ def exner_profile(z, theta_bar, p_surface=101325.0):
     idx = np.arange(th.size)
     th = np.interp(idx, idx[good], th[good])
 
+    # p_surface applies at z = 0 (the domain base), which is NOT necessarily
+    # the lowest OUTPUT level: a bounds z-cut can start well above it. Anchor
+    # the profile at z = 0 and descend/ascend to z[0] first, otherwise the
+    # whole column is offset by G/CP * z[0] - about 0.04 K for a cut starting
+    # at 4 m, but 1 K for one starting at 100 m.
     pi = np.empty_like(z)
-    pi[0] = (p_surface / P0) ** KAPPA
+    pi[0] = (p_surface / P0) ** KAPPA - G / CP * z[0] / th[0]
     for k in range(1, z.size):
         theta_mid = 0.5 * (th[k] + th[k - 1])
         pi[k] = pi[k - 1] - G / CP * (z[k] - z[k - 1]) / theta_mid

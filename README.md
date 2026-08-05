@@ -193,6 +193,8 @@ Both of those are selective: the raster keeps only the topmost face per column, 
 
 **Actual temperature from potential temperature.** PALM's prognostic variables are potential temperatures: `theta` in the volume, `theta_surface` (or `theta_surf`) at the surface. The actual temperatures are `ta` and `t_surf`, related by `T = theta * Pi` with the Exner function integrated hydrostatically (`dPi/dz = -g/(cp*theta)`) from `surface_pressure`.
 
+`surface_pressure` is read from the `_p3d` namelist unless it is set in the config, so it cannot drift from what the run actually used. **PALM gives that key in hPa** and palm2gis converts to Pa; a value set in the YAML is taken as Pa and wins untouched. Only when there is neither does it fall back to 101325 Pa — the standard atmosphere at *sea level*, which is wrong for any elevated domain and biases every derived temperature warm by roughly 0.85 K per 10 hPa. Prague's ~200 m is worth about 1.7 K, a uniform offset that no pattern in the output would reveal.
+
 `voxel.derive_ta` and `surfaces.derive_ta` *ensure* those variables rather than always computing them: **if the file already holds PALM's own `ta` or `t_surf`, that value is used**, because it is exact; only when it is absent is it reconstructed, and the reconstruction is tagged `derived_from = "theta"` so the two can never be confused. Surface temperature is evaluated at each face's own height and appears in the raster, the mesh NetCDF and the element layers alike. Both `theta_surface` and `theta_surf` are accepted, and a listed variable missing under one spelling is substituted from the other. PALM's `p` output is the *perturbation* pressure and is deliberately never used as absolute pressure.
 
 ### wind — vectors at heights above ground

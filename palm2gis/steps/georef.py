@@ -194,6 +194,8 @@ def process_static_driver(cfg):
         raise RuntimeError("nz/dz not found in p3d and not set in config.")
     g.nz, g.dz = int(nz), float(dz)
 
+    cfg.resolve_surface_pressure(g.p3d)
+
     with Dataset(cfg.resolve(dom["static_driver"]), "r") as nc:
         x = np.asarray(nc.variables["x"][:])
         y = np.asarray(nc.variables["y"][:])

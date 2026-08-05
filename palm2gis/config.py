@@ -8,7 +8,7 @@ from pathlib import Path
 
 import yaml
 
-from .log import debug, get_logger, info
+from .log import debug, get_logger, info, warning
 
 log = get_logger()
 
@@ -166,13 +166,16 @@ DEFAULTS = {
     # in the NetCDF outputs is set to "degC" accordingly. Inputs must stay
     # raw kelvin either way (see the raw-input guard).
     "celsius": False,
-    # Pressure [Pa] at the model's z = 0 level (the domain base, i.e. at
+    # Pressure at the model's z = 0 level (the domain base, i.e. at
     # origin_z - NOT sea level), used for the Exner function when deriving
-    # air temperature. This matters: T scales as (p/p0)^0.286, so a 10 hPa
-    # error shifts the derived temperature by about 0.85 K. Use the
-    # surface_pressure from your _p3d namelist, reduced to the domain base
-    # if it refers to sea level.
-    "surface_pressure": 101325.0,
+    # air temperature. Left null (the default) it is read from the p3d:
+    # PALM's own `surface_pressure`, which the namelist gives in hPa and
+    # which is converted to Pa here. Falls back to 101325 Pa only when
+    # there is no p3d and no value here - a standard-atmosphere placeholder
+    # that is wrong for any domain much above sea level. This matters: T
+    # scales as (p/p0)^0.286, so a 10 hPa error shifts the derived
+    # temperature by about 0.85 K.
+    "surface_pressure": None,
     "canopy": {
         "enabled": False,
         # Where `lad` lives - the static driver, unless overridden.
@@ -285,6 +288,54 @@ class Config:
             return str(p.relative_to(self.output_dir))
         except ValueError:
             return str(p)
+
+    # -- namelist-derived settings -----------------------------------------
+    P_STANDARD = 101325.0        # standard atmosphere at SEA LEVEL [Pa]
+
+    def resolve_surface_pressure(self, p3d):
+        """Fill in `surface_pressure` from the p3d when it was left null.
+
+        PALM's namelist `surface_pressure` is in HECTOPASCALS (default
+        1013.25); everything here works in Pa, so it is converted. A value
+        set explicitly in the YAML is in Pa and wins untouched.
+
+        Without this the config carried a hardcoded 101325 Pa - the
+        standard atmosphere at SEA LEVEL. Prague sits near 200 m, where
+        the real pressure is some 20 hPa lower, which biases every derived
+        air temperature by about 1.7 K. Nothing downstream could detect
+        that: the field simply comes out uniformly too warm.
+        """
+        if self._cfg["surface_pressure"] is not None:
+            debug("[static] surface_pressure = {:.0f} Pa (from the config).",
+                  float(self._cfg["surface_pressure"]))
+            return
+
+        raw = (p3d or {}).get("surface_pressure")
+        if raw is None:
+            self._cfg["surface_pressure"] = self.P_STANDARD
+            info("[static] no surface_pressure in the p3d or the config - "
+                 "using the standard {:.0f} Pa. That is SEA LEVEL: if the "
+                 "domain base sits well above it, derived air temperatures "
+                 "are biased warm by ~0.85 K per 10 hPa.", self.P_STANDARD)
+            return
+
+        raw = float(raw)
+        # PALM reads this key in hPa. A four- or six-digit number means the
+        # namelist was written in Pa instead - take it at face value rather
+        # than turning 101325 into 10 132 500 Pa, but say so, because PALM
+        # ITSELF would have read it as hPa and the run may be affected.
+        if raw > 2000.0:
+            warning("[static] p3d surface_pressure = {:g} looks like Pa, but "
+                    "PALM reads that key in hPa (and would have used {:g} "
+                    "Pa). Taking it as {:.0f} Pa here - check the namelist.",
+                    raw, raw * 100.0, raw)
+            p_pa = raw
+        else:
+            p_pa = raw * 100.0
+
+        self._cfg["surface_pressure"] = p_pa
+        info("[static] surface_pressure = {:.0f} Pa ({:g} hPa, from the "
+             "p3d).", p_pa, p_pa / 100.0)
 
     # -- overwrite policy --------------------------------------------------
     @property

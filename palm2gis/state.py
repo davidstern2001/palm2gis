@@ -33,8 +33,12 @@ STATE_FILE = ".palm2gis_state.json"
 # Which config sections each stage's output depends on. `domain` and
 # `bounds` affect every product; the rest are per stage.
 _STAGE_KEYS = {
-    "voxel":    ("domain", "bounds", "crs", "celsius", "voxel"),
-    "surfaces": ("domain", "bounds", "crs", "celsius", "surfaces"),
+    # surface_pressure feeds the theta -> ta derivation, so a change to it
+    # must invalidate the products that carry derived temperatures.
+    "voxel":    ("domain", "bounds", "crs", "celsius", "surface_pressure",
+                 "voxel"),
+    "surfaces": ("domain", "bounds", "crs", "celsius", "surface_pressure",
+                 "surfaces"),
     "wind":     ("domain", "bounds", "crs", "wind"),
     "canopy":   ("domain", "bounds", "crs", "canopy"),
 }

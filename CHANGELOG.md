@@ -1,5 +1,49 @@
 # Changelog
 
+## 0.13.0
+
+**Correctness**
+
+- `surface_pressure` is read from the `_p3d` namelist instead of defaulting
+  to a hardcoded 101325 Pa. That constant is the standard atmosphere at SEA
+  LEVEL; the Prague domains sit near 200 m, some 20 hPa lower, so every
+  derived `ta` / `t_surf` came out about 1.7 K too warm - a uniform offset
+  that nothing in the output could reveal. PALM gives the key in
+  HECTOPASCALS and it is converted to Pa here. A value set in the config is
+  in Pa and still wins; the standard-atmosphere fallback applies only when
+  neither source has it, and now says so. A namelist value above 2000 is
+  taken as Pa with a warning, since PALM itself would have read it as hPa.
+- `surface_pressure` joined the state hash for the voxel and surfaces
+  stages, so changing it invalidates the products carrying derived
+  temperatures. Previously a rerun kept them.
+
+## 0.12.1
+
+**Correctness**
+
+- `exner_profile` anchored the Exner function at the LOWEST OUTPUT LEVEL
+  rather than at z = 0, where `surface_pressure` actually applies. A
+  bounds z-cut therefore shifted the whole derived-ta column by
+  g/cp * z[0]: 0.04 K for a cut starting at 4 m, but 1 K for one starting
+  at 100 m. The profile now descends from z = 0 to the first output level.
+
+**Diagnostics**
+
+- The voxel ta derivation says what it does to the numbers instead of
+  reporting the Exner function:
+
+      before: [voxel] Exner 1.00377..1.00227 over z 4..48 m
+              (p_s = 101325 Pa): ta - theta = +1.11..+0.67 K
+      after:  [voxel] deriving ta from theta: ta comes out 1.08 K warmer
+              at z = 4 m, 0.65 K warmer at 48 m.
+
+  The Exner values, the decay rate and p_surface moved to debug.
+- Warn when the theta -> ta offset does not decay at the dry adiabatic
+  rate. theta * dPi/dz = -g/cp holds whatever the stratification, so a
+  departure means `surface_pressure` or the height axis is wrong - the
+  kind of error that otherwise produces plausible-looking temperatures.
+- `test.py` gained a check that the Exner profile is anchored at z = 0.
+
 ## 0.12.0
 
 **Correctness**
