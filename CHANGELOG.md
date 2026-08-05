@@ -1,5 +1,55 @@
 # Changelog
 
+## 0.12.0
+
+**Correctness**
+
+- The timestep window can now be given in TIME
+  (`bounds.time_from` / `bounds.time_to`) instead of record indices.
+  `skip_times` / `n_times` count records, and a record is not the same
+  amount of time in every file: PALM keeps separate output intervals for
+  3D and surface output, so a run whose 3D file holds 10-minute records
+  and whose surface file holds hourly ones gave
+
+      [surfaces] records 18..21 of 24 selected     -> 18-21 h into the run
+      [voxel]    records 18..21 of 144 selected    ->  3-3.5 h into the run
+
+  from one config - two stages converting completely different periods,
+  with nothing in the log to say so. Each stage now resolves the same
+  window against its own time axis. Both ends are inclusive; either may be
+  left null. Accepted: seconds since `origin_time` (`64800`), an offset
+  with a unit (`"18h"`, `"90min"`), an absolute timestamp
+  (`"2023-08-24 13:00:00"`), or a quoted clock time (`"13:00"`, resolved
+  to its first occurrence at or after `origin_time`, so a window crossing
+  midnight works).
+- `select_times` returned a COMPACTED time array when fill records sat in
+  the middle of a file, while the record indices it returned alongside
+  index the data arrays. Every label after such a gap was therefore taken
+  from the wrong record. Times are now returned full length and aligned
+  with the file's record dimension, with NaN in the fill slots, and those
+  records are excluded from the selection.
+
+**Diagnostics**
+
+- The selection line now reports the period, not just the indices:
+  `[voxel] records 107..125 of 144 selected (2023-08-24 13:00:00 .. 2023-08-24 16:00:00).`
+- When two stages are selected by record index and land on windows that do
+  not overlap at all, the run warns and points at `time_from`/`time_to` -
+  the case above would have been caught immediately.
+- An unquoted clock time (`time_from: 13:00`) is rejected at config load.
+  YAML 1.1 resolves it as the sexagesimal number 780, which would have
+  been read as an offset in seconds; nothing downstream could tell it from
+  a genuine number.
+- A window that falls outside a file now says what the file actually
+  covers instead of only reporting that nothing was selected.
+- Malformed `time_from`/`time_to` values fail at config load rather than
+  part-way through the first stage.
+
+**Housekeeping**
+
+- Removed stale duplicates of `config.py`, `pipeline.py` and `state.py`
+  that were sitting unused (and unimportable) under `palm2gis/steps/`.
+
 ## 0.11.1
 
 **Correctness**

@@ -62,15 +62,44 @@ bounds:
   # zmax = height ABOVE the highest surface (terrain + buildings) inside
   # the cut subdomain; the vertical index range is derived from it.
   zmax: 40
-  # Timestep window. skip_times is how many records to skip from the
-  # start; n_times is how MANY records to convert after that.
+  # ---- Timestep window, in TIME (recommended) --------------------------
+  # NEW IN 0.12.0. State the period ONCE and every stage resolves it
+  # against its own file, so a 10-minute 3D file and an hourly surface file
+  # come out covering the SAME hours. Use this whenever more than one stage
+  # runs - see the note under skip_times for why indices do not travel.
+  # Accepted forms:
+  #   3600                    seconds since origin_time
+  #   "6h" / "90min" / "45s"  the same, with a unit (s/min/h/d)
+  #   "2023-08-24 13:00:00"   an absolute timestamp
+  #   "13:00"                 clock time: the first occurrence at or after
+  #                           origin_time (so "22:00" -> "02:00" crosses
+  #                           midnight the way you would expect)
+  # QUOTE clock times. Unquoted, YAML 1.1 reads 13:00 as the sexagesimal
+  # number 780 and it would silently become an offset in seconds; the run
+  # stops with an error if it finds one, rather than converting the wrong
+  # period.
+  # Both ends are INCLUSIVE; either may be left null for "from the first
+  # record" / "to the last". Setting these makes skip_times / n_times /
+  # time_end inactive.
+  time_from: null
+  time_to: null
+
+  # ---- Timestep window, in RECORD INDICES ------------------------------
+  # skip_times is how many records to skip from the start; n_times is how
+  # MANY records to convert after that. Simple, but an index is only
+  # meaningful for ONE file: PALM keeps separate output intervals for 3D
+  # and surface output, so record 18 is 3 hours into a 10-minute 3D file
+  # and 18 hours into an hourly surface file. Converting both stages by
+  # index therefore covers two different periods - the run warns when the
+  # windows it selects do not even overlap. Reach for time_from/time_to
+  # instead.
   #
   # CHANGED IN 0.10.0: n_times used to be the exclusive END index, so
   # skip_times: 10 with n_times: 5 selected nothing at all. It is a count
   # now. Set `time_end` instead if you want the old end-index meaning:
   #   skip_times: 2, n_times: 5   -> records 2,3,4,5,6   (5 records)
   #   skip_times: 2, time_end: 5  -> records 2,3,4       (up to index 5)
-  # Clamped per file, since 3D and surface output use separate intervals.
+  # Clamped per file.
   skip_times: 0
   n_times: 99999
   # time_end: null      # alternative to n_times: exclusive end index
@@ -216,7 +245,7 @@ surface_pressure: 101325.0
 # TERRAIN. The rasters below need no lift; the volume is lifted onto
 # absolute heights the way paraview_vis did for ParaView.
 canopy:
-  enabled: false
+  enabled: true
   file_from: null                     # null -> the static driver
   prefix: project_
   write_lai: true                     # <prefix>lai.tif - LAD integrated

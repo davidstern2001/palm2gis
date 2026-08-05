@@ -2,6 +2,7 @@
 
 import copy
 import os
+import re
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -54,6 +55,25 @@ DEFAULTS = {
         # x0 / xmax / y0 / ymax
         # zmax: height above the highest surface (terrain + buildings)
         #       inside the cut subdomain.
+        # ---- window in TIME (preferred) ----------------------------------
+        # The period to convert, stated ONCE and resolved against each
+        # file's own time axis. PALM keeps separate output intervals for 3D
+        # and surface output, so the same RECORD INDEX means a different
+        # moment in each file - record 18 is 3 hours in for a 10-minute 3D
+        # file and 18 hours in for an hourly surface file. Set these and
+        # every stage converts the same period. Accepted:
+        #   3600                  seconds since origin_time
+        #   "6h" / "90min"        the same, with a unit (s/min/h/d)
+        #   "2023-08-24 13:00:00" an absolute timestamp
+        #   "13:00"               clock time, first occurrence at or after
+        #                         origin_time (QUOTE it - YAML reads a bare
+        #                         13:00:00 as the number 46800)
+        # Both ends are INCLUSIVE. Either may be left null for "from the
+        # start" / "to the end". When set, skip_times/n_times/time_end are
+        # ignored.
+        "time_from": None,
+        "time_to": None,
+        # ---- window in RECORD INDICES (simple, but per-file) -------------
         "skip_times": 0,
         # NUMBER of records to convert, counted from skip_times. The
         # default keeps everything. Up to 0.9.0 this was passed to range()
@@ -191,6 +211,27 @@ class ConfigError(Exception):
     pass
 
 
+# `time_from: 13:00` looks like a clock time but YAML 1.1 resolves it as a
+# SEXAGESIMAL NUMBER - 780 here, 46800 for 13:00:00 - which then arrives as
+# a plain seconds offset and silently converts the wrong period. There is no
+# way to tell that apart from a genuine number once YAML has parsed it, so
+# the raw text is checked instead.
+_UNQUOTED_CLOCK = re.compile(
+    r"^\s*(time_from|time_to)\s*:\s*(\d{1,2}:\d{2}(?::\d{2})?)\s*(?:#.*)?$",
+    re.M)
+
+
+def _check_unquoted_clock(text):
+    m = _UNQUOTED_CLOCK.search(text)
+    if m:
+        key, val = m.group(1), m.group(2)
+        raise ConfigError(
+            "bounds.{key}: {val} must be QUOTED (\"{val}\"). Unquoted, YAML "
+            "reads it as a sexagesimal number, not a clock time, and it "
+            "would be taken as an offset in seconds from origin_time."
+            .format(key=key, val=val))
+
+
 # ------------------------------
 # 4. CONFIG CLASS
 # ------------------------------
@@ -207,8 +248,9 @@ class Config:
         self._path = Path(path).resolve()
         if not self._path.is_file():
             raise FileNotFoundError(f"Config file not found: {path}")
-        with open(self._path) as f:
-            user = yaml.safe_load(f) or {}
+        text = self._path.read_text()
+        user = yaml.safe_load(text) or {}
+        _check_unquoted_clock(text)
 
         self._cfg = _deep_merge(DEFAULTS, user)
         root = self._cfg["project"]["root"]
@@ -335,6 +377,20 @@ class Config:
                                        or c["domain"]["dz"] is None):
             raise ConfigError("Give either domain.p3d or both domain.nz "
                               "and domain.dz.")
+
+        # Catch a malformed time window at load time rather than halfway
+        # through the first stage. A dummy origin is enough to check the
+        # form; the real origin_time is only needed for the conversion.
+        import datetime as _dt
+        from .steps.georef import parse_time_bound
+        ref = _dt.datetime(2000, 1, 1)
+        try:
+            _, dt0 = parse_time_bound(c["bounds"].get("time_from"), ref,
+                                      "bounds.time_from")
+            parse_time_bound(c["bounds"].get("time_to"), ref,
+                             "bounds.time_to", after=dt0)
+        except RuntimeError as exc:
+            raise ConfigError(str(exc))
 
         for stage in c["stages"]:
             if stage not in STAGES:

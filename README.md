@@ -154,7 +154,28 @@ wind:
 
 **Existing outputs are never replaced by default.** A file that is already there is kept and its product skipped, so a rerun costs almost nothing and fills in only what is missing — delete a single GeoTIFF and rerun to regenerate just that one. To regenerate everything, set `project.overwrite: true` or pass `--overwrite`; the run then logs a warning and replaces each output. Use `--dry-run` to see, per file, whether it would be kept, written, or replaced.
 
-The `bounds` section cuts a subdomain in metres of the local PALM coordinate system (`x0`/`xmax`/`y0`/`ymax`, plus `zmax` as height above the highest surface inside the cut) and selects the timestep window (`skip_times`, `n_times`) — the same conventions as `paraview_vis`, so existing values carry over directly.
+The `bounds` section cuts a subdomain in metres of the local PALM coordinate system (`x0`/`xmax`/`y0`/`ymax`, plus `zmax` as height above the highest surface inside the cut) and selects the timestep window.
+
+**Select the timestep window in time, not in record indices.** PALM keeps separate output intervals for 3D and surface output — `dt_data_output_av` and `dt_dosurf_av` — so a single run routinely produces a 10-minute 3D file next to an hourly surface file. A record index is then meaningful for one file only: `skip_times: 18` starts 3 hours into the 3D file and 18 hours into the surface file, and the stages quietly convert two different periods. Since 0.12.0, `bounds.time_from` / `bounds.time_to` state the window once and each stage resolves it against its own time axis:
+
+```yaml
+bounds:
+  time_from: "2023-08-24 13:00:00"   # absolute timestamp
+  time_to:   "2023-08-24 16:00:00"
+  # also accepted: 64800 (seconds since origin_time), "18h", "90min",
+  #                "13:00" (clock time, first occurrence after origin_time)
+```
+
+Both ends are inclusive, either may be left `null` for "from the first record" / "to the last", and the run reports what each stage picked:
+
+```
+[surfaces] records 17..20 of 24 selected (2023-08-24 13:00:00 .. 2023-08-24 16:00:00).
+[voxel]    records 107..125 of 144 selected (2023-08-24 13:00:00 .. 2023-08-24 16:00:00).
+```
+
+Quote clock times. Unquoted, YAML 1.1 reads `13:00` as the sexagesimal number 780, which would arrive as an offset in seconds; the config is rejected with an explanation rather than converting the wrong hours.
+
+`skip_times` and `n_times` still work as before (`n_times` is a count, `time_end` the exclusive end index) and are clamped per file, but they are ignored while `time_from`/`time_to` are set. When they are used and two stages end up on windows that do not even overlap, the run now warns and points at `time_from`/`time_to`.
 
 ---
 
