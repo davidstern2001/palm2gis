@@ -1,9 +1,5 @@
-"""palm2gis - PALM outputs -> ArcGIS Pro / QGIS layers.
+"""Conversion stages: static driver georeferencing, voxel, surfaces, wind,
+canopy, plus the shared thermodynamics and QGIS style helpers.
 
-Stages:
-    voxel -> surfaces -> wind
-
-See template.yaml and README.md for usage.
+The package version lives in palm2gis/__init__.py.
 """
-
-__version__ = "0.11.0"
