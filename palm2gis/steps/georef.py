@@ -173,6 +173,7 @@ def read_p3d(path):
 def process_static_driver(cfg):
     """Read the static driver (and optionally the p3d file); return a Grid."""
     progress("Reading the static driver")
+    reset_time_windows()          # a fresh run: forget the previous windows
 
     dom = cfg["domain"]
     bnd = cfg["bounds"]
@@ -308,19 +309,155 @@ def infer_time_params(grid, tag, source=""):
     return None, None, None
 
 
+# ------------------------------
+# 4b. TIME WINDOW PARSING
+# ------------------------------
+# `skip_times` / `n_times` count RECORDS, and a record means a different
+# amount of wall-clock time in each file: PALM keeps separate output
+# intervals for 3D and surface output, so record 18 of a 10-minute 3D file
+# is 3 hours in while record 18 of an hourly surface file is 18 hours in.
+# Selecting the same index range from both therefore converts two
+# completely different periods. `bounds.time_from` / `time_to` state the
+# window ONCE, in time, and every stage resolves it against its own file.
+_UNIT_S = {"s": 1.0, "sec": 1.0, "secs": 1.0, "second": 1.0, "seconds": 1.0,
+           "m": 60.0, "min": 60.0, "mins": 60.0, "minute": 60.0,
+           "minutes": 60.0,
+           "h": 3600.0, "hr": 3600.0, "hrs": 3600.0, "hour": 3600.0,
+           "hours": 3600.0,
+           "d": 86400.0, "day": 86400.0, "days": 86400.0}
+
+_OFFSET_RE = re.compile(r"^([-+]?\d+(?:\.\d+)?)\s*([a-zA-Z]*)$")
+_STAMP_RE = re.compile(r"^(\d{4})-(\d{1,2})-(\d{1,2})[ T](\d{1,2}):(\d{2})"
+                       r"(?::(\d{2}))?$")
+_CLOCK_RE = re.compile(r"^(\d{1,2}):(\d{2})(?::(\d{2}))?$")
+
+
+def parse_time_bound(value, origin_time, key, after=None):
+    """One end of the bounds.time_from / time_to window.
+
+    Returns (seconds_since_origin_time, absolute_datetime_or_None), or
+    (None, None) when the value is unset. Accepted forms:
+
+        3600            seconds since origin_time (a bare number)
+        "6h" / "90min"  the same, with a unit (s/min/h/d)
+        "2023-08-24 13:00:00"   an absolute timestamp
+        "13:00"         a clock time - the FIRST occurrence at or after
+                        origin_time (or after `after`, so a window like
+                        "22:00" -> "02:00" crosses midnight correctly)
+
+    YAML quirks worth knowing: an unquoted `2023-08-24 13:00:00` is parsed
+    by YAML itself into a datetime (handled here), while an unquoted
+    `13:00:00` becomes the sexagesimal integer 46800 - which would be read
+    as seconds. Clock times must be QUOTED.
+    """
+    if value is None or value == "":
+        return None, None
+
+    origin = getattr(origin_time, "year", None) and origin_time or None
+
+    def _to_pair(dt):
+        if dt.tzinfo is not None:                # compare like with like
+            dt = dt.replace(tzinfo=None)
+        if origin is None:
+            raise RuntimeError(
+                "{} is a timestamp, but the domain origin_time is unknown - "
+                "give domain.origin_time, or use seconds instead."
+                .format(key))
+        return (dt - origin).total_seconds(), dt
+
+    if isinstance(value, bool):
+        raise RuntimeError("{}: expected a time, got {!r}.".format(key, value))
+    if isinstance(value, datetime.datetime):     # YAML parsed it for us
+        return _to_pair(value)
+    if isinstance(value, datetime.date):
+        return _to_pair(datetime.datetime(value.year, value.month, value.day))
+    if isinstance(value, (int, float)):
+        return float(value), None
+
+    s = str(value).strip()
+
+    m = _STAMP_RE.match(s)
+    if m:
+        y, mo, d, hh, mm, ss = m.groups()
+        return _to_pair(datetime.datetime(int(y), int(mo), int(d), int(hh),
+                                          int(mm), int(ss or 0)))
+
+    m = _CLOCK_RE.match(s)
+    if m:
+        hh, mm, ss = m.groups()
+        if origin is None:
+            raise RuntimeError(
+                "{}: a clock time needs the domain origin_time to be "
+                "resolved.".format(key))
+        ref = after if after is not None else origin
+        cand = datetime.datetime.combine(
+            ref.date(), datetime.time(int(hh), int(mm), int(ss or 0)))
+        while cand < ref:                        # roll into the next day(s)
+            cand += datetime.timedelta(days=1)
+        return _to_pair(cand)
+
+    m = _OFFSET_RE.match(s)
+    if m:
+        num, unit = m.groups()
+        unit = (unit or "s").lower()
+        if unit not in _UNIT_S:
+            raise RuntimeError(
+                "{}: unknown time unit {!r} in {!r} (use s, min, h or d)."
+                .format(key, unit, s))
+        return float(num) * _UNIT_S[unit], None
+
+    raise RuntimeError(
+        "{}: cannot read {!r} as a time. Use seconds (3600), a unit "
+        "(\"6h\"), a timestamp (\"2023-08-24 13:00:00\") or a quoted clock "
+        "time (\"13:00\").".format(key, s))
+
+
+# Windows already resolved in this run, so a later stage can notice that it
+# is converting a different period than an earlier one - the exact failure
+# that index-based selection causes across files of unequal interval.
+_RUN_WINDOWS = {}
+
+
+def reset_time_windows():
+    """Forget the per-stage windows of a previous run (same process)."""
+    _RUN_WINDOWS.clear()
+
+
+def _fmt_stamp(grid, seconds):
+    """`seconds` as a timestamp when origin_time is known, else as s."""
+    if grid is not None and getattr(grid, "origin_time", None) is not None \
+            and np.isfinite(seconds):
+        dt = grid.times_to_datetime([seconds])[0]
+        if dt is not None:
+            return dt.strftime("%Y-%m-%d %H:%M:%S")
+    return "{:g} s".format(seconds)
+
+
 def select_times(cfg, nc, tag="", grid=None, source=""):
-    """Timestep indices selected by bounds.skip_times / n_times, plus the
-    time values. Shared by all stages reading PALM output.
+    """Timestep indices to convert, plus the time value of every record.
+
+    Two ways to pick the window:
+
+    * bounds.time_from / time_to - a window in TIME. Each file is matched
+      on its own time axis, so a 10-minute 3D file and an hourly surface
+      file both come back covering the same period. Prefer this whenever
+      more than one stage runs.
+    * bounds.skip_times / n_times (or time_end) - a window in RECORD
+      INDICES, clamped per file. Simple, but index n means a different
+      moment in files written at different intervals.
+
+    `times` is returned FULL LENGTH and aligned with the file's record
+    dimension (NaN where a record carries no usable time), because callers
+    index it with the returned record indices.
 
     PALM pads unwritten records at the end of a file with the time variable's
     _FillValue (a large integer), so trailing fill entries are dropped. A
     file whose time variable is fill/masked THROUGHOUT still has usable data
-    records - its raw values are used with a warning rather than leaving
-    nothing to convert. Different output files of the same run routinely
-    hold different numbers of records (3D and surface output use separate
-    intervals), so the window is clamped per file and reported.
+    records - its times are rebuilt from the p3d rather than leaving nothing
+    to convert.
     """
     label = "[{}] ".format(tag) if tag else ""
+    bnd = cfg["bounds"]
 
     if "time" not in nc.variables:
         raise RuntimeError("No 'time' variable in the file.")
@@ -337,15 +474,15 @@ def select_times(cfg, nc, tag="", grid=None, source=""):
         bad |= raw == float(fv)
 
     n_all = raw.size
-    step = cfg["bounds"].get("time_step")
-    start = cfg["bounds"].get("time_start") or 0.0
+    step = bnd.get("time_step")
+    start = bnd.get("time_start") or 0.0
     src_key = None
     if step is None and grid is not None:
         # Nothing set by hand: ask the namelist for this stage's interval.
         step, start_auto, src_key = infer_time_params(grid, tag, source)
         if step:
-            start = (cfg["bounds"].get("time_start")
-                     if cfg["bounds"].get("time_start") else start_auto)
+            start = (bnd.get("time_start")
+                     if bnd.get("time_start") else start_auto)
     if bad.all():
         # Some PALM surface files are written with the time variable left at
         # its _FillValue (~1e36). Those numbers are not times - using them
@@ -366,48 +503,122 @@ def select_times(cfg, nc, tag="", grid=None, source=""):
                     "output interval for this product - labelling by "
                     "record index (set bounds.time_step to rebuild real "
                     "times).", label)
+        good = np.ones(n_all, dtype=bool)
         n_valid = n_all
     else:
-        # keep the leading run of good records (trailing fill is the norm)
+        # Times stay FULL LENGTH with NaN in the fill slots: the indices
+        # returned here are used to index the DATA arrays as well, so
+        # compacting the time array would shift every label after a gap.
+        times = np.where(bad, np.nan, raw)
+        good = ~bad
         n_valid = int(np.argmax(bad)) if bad.any() else n_all
         if bad[:n_valid].any():          # fill in the middle: keep all good
-            n_valid = int((~bad).sum())
-            times = raw[~bad]
-        else:
-            times = raw
-        if n_valid < n_all:
+            n_valid = int(good.sum())
+        else:                            # trailing fill: nothing past n_valid
+            good = good & (np.arange(n_all) < n_valid)
+        if int(good.sum()) < n_all:
             debug("{}{} of {} records are fill/masked and were dropped.",
-                  label, n_all - n_valid, n_all)
+                  label, n_all - int(good.sum()), n_all)
 
-    skip = cfg["bounds"]["skip_times"]
+    # ---- window in TIME (preferred: file-interval independent) ----------
+    origin_time = getattr(grid, "origin_time", None) if grid is not None \
+        else None
+    t0, dt0 = parse_time_bound(bnd.get("time_from"), origin_time,
+                               "bounds.time_from")
+    t1, dt1 = parse_time_bound(bnd.get("time_to"), origin_time,
+                               "bounds.time_to", after=dt0)
+    by_time = t0 is not None or t1 is not None
 
-    # `n_times` is a COUNT of records to keep, starting at skip_times. It
-    # used to be passed straight to range() as the END index, so it behaved
-    # as "stop at record n_times" instead: skip_times=10 with n_times=5
-    # selected nothing at all, and the error message had to explain that
-    # n_times must exceed skip_times. The name said count, the code meant
-    # end index. `time_end` is available for anyone who wants the old
-    # exclusive-end meaning explicitly.
-    end = cfg["bounds"].get("time_end")
-    if end is not None:
-        stop = min(int(end), n_valid)
+    if by_time:
+        if t0 is not None and t1 is not None and t1 < t0:
+            raise RuntimeError(
+                "bounds.time_to ({:g} s) is before bounds.time_from ({:g} s)."
+                .format(t1, t0))
+        for key in ("skip_times", "n_times", "time_end"):
+            val = bnd.get(key)
+            if val not in (None, 0, 99999):
+                warning("{}bounds.{} = {} is ignored: the window is set by "
+                        "bounds.time_from/time_to.", label, key, val)
+        usable = good & np.isfinite(times)
+        if not usable.any():
+            raise RuntimeError(
+                "bounds.time_from/time_to need real timestamps, but this "
+                "file carries none and none could be rebuilt. Set "
+                "bounds.time_step (and time_start), or select by "
+                "skip_times/n_times instead.")
+        tol = 1.0e-3                      # guard against float round-off
+        keep = usable.copy()
+        if t0 is not None:
+            keep &= times >= t0 - tol
+        if t1 is not None:
+            keep &= times <= t1 + tol
+        its = [int(i) for i in np.flatnonzero(keep)]
+        if not its:
+            tv = times[usable]
+            raise RuntimeError(
+                "No timesteps in the requested window: bounds.time_from/"
+                "time_to ask for {} .. {}, while this file covers {} .. {} "
+                "({} record(s)).".format(
+                    _fmt_stamp(grid, t0) if t0 is not None else "start",
+                    _fmt_stamp(grid, t1) if t1 is not None else "end",
+                    _fmt_stamp(grid, float(tv.min())),
+                    _fmt_stamp(grid, float(tv.max())), tv.size))
+    # ---- window in RECORD INDICES (the original behaviour) --------------
     else:
-        want = cfg["bounds"]["n_times"]
-        stop = n_valid if want >= 99999 else min(skip + int(want), n_valid)
-    its = list(range(skip, stop))
-    if not its:
-        raise RuntimeError(
-            "No timesteps selected: this file holds {} usable record(s) "
-            "(of {} in the time dimension), while bounds.skip_times={} and "
-            "bounds.{}={}. Lower skip_times, or raise the count.".format(
-                n_valid, n_all, skip,
-                "time_end" if end is not None else "n_times",
-                end if end is not None else cfg["bounds"]["n_times"]))
+        skip = bnd["skip_times"]
+
+        # `n_times` is a COUNT of records to keep, starting at skip_times. It
+        # used to be passed straight to range() as the END index, so it
+        # behaved as "stop at record n_times" instead: skip_times=10 with
+        # n_times=5 selected nothing at all, and the error message had to
+        # explain that n_times must exceed skip_times. The name said count,
+        # the code meant end index. `time_end` is available for anyone who
+        # wants the old exclusive-end meaning explicitly.
+        end = bnd.get("time_end")
+        if end is not None:
+            stop = min(int(end), n_valid)
+        else:
+            want = bnd["n_times"]
+            stop = n_valid if want >= 99999 else min(skip + int(want), n_valid)
+        its = [i for i in range(skip, stop) if good[i]]
+        if not its:
+            raise RuntimeError(
+                "No timesteps selected: this file holds {} usable record(s) "
+                "(of {} in the time dimension), while bounds.skip_times={} "
+                "and bounds.{}={}. Lower skip_times, raise the count, or "
+                "select by time with bounds.time_from/time_to.".format(
+                    n_valid, n_all, skip,
+                    "time_end" if end is not None else "n_times",
+                    end if end is not None else bnd["n_times"]))
+
+    # ---- report, and cross-check against the other stages ---------------
+    sel_t = times[np.asarray(its)]
+    span = ""
+    if np.isfinite(sel_t).all():
+        span = " ({} .. {})".format(_fmt_stamp(grid, float(sel_t[0])),
+                                    _fmt_stamp(grid, float(sel_t[-1])))
     if len(its) == n_all:
-        debug("{}all {} records selected.", label, n_all)
+        debug("{}all {} records selected{}.", label, n_all, span)
     else:
-        info("{}records {}..{} of {} selected.", label, its[0], its[-1],
-             n_all)
+        info("{}records {}..{} of {} selected{}.", label, its[0], its[-1],
+             n_all, span)
+
+    if np.isfinite(sel_t).all() and tag:
+        lo, hi = float(sel_t[0]), float(sel_t[-1])
+        for other, (o_lo, o_hi, o_tag) in _RUN_WINDOWS.items():
+            if other == tag:
+                continue
+            if hi < o_lo or lo > o_hi:    # no overlap at all
+                warning("{}this window ({} .. {}) does not overlap the one "
+                        "[{}] is converting ({} .. {}) - record indices mean "
+                        "different times in files of unequal output "
+                        "interval. Set bounds.time_from/time_to to pin the "
+                        "same period in every stage.",
+                        label, _fmt_stamp(grid, lo), _fmt_stamp(grid, hi),
+                        o_tag, _fmt_stamp(grid, o_lo), _fmt_stamp(grid, o_hi))
+                break
+        _RUN_WINDOWS[tag] = (lo, hi, tag)
+
     return its, times
 
 
