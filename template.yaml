@@ -105,7 +105,11 @@ voxel:
     #do_velocity: true #destagger and write u, v, w
     #scalars: [] #copied and cut as-is, e.g. ['theta', 'rh']
     #drop_k0: true #drop z = 0 so the vertical spacing is uniform
-    #derive_ta: false #ensure `ta`: PALM's own if present, else theta * Exner
+    # Ensure `ta`, the AIR temperature: PALM's own if the file has it,
+    # else derived as theta * Exner. The surface skin temperature is a
+    # different quantity, called `t_surf` and produced by the surfaces
+    # stage below - there is no such variable as ta_surf/ta_surface.
+    #derive_ta: false
 
 ################################# SURFACES ##################################
 # Surface elements -> top-view rasters + wall polygons.
@@ -132,7 +136,11 @@ surfaces:
     #wall_lines: true #2D-visible traces of the walls (zero footprint in plan)
     #write_all_elements_gpkg: false
     #layer_name: ~ #default: derived from the output file name
-    #derive_ta: false #derive t_surf from the surface potential temperature
+    # Ensure `t_surf`, the surface SKIN temperature, from theta_surface
+    # (which is a POTENTIAL temperature). Despite the key name this
+    # does not produce `ta` - that is air temperature, from the voxel
+    # stage.
+    #derive_ta: false
 
 ################################### WIND ####################################
 # Wind vectors sampled above the LOCAL surface, so the levels follow streets

@@ -100,12 +100,17 @@ DEFAULTS = {
         # Drop the z = 0 level so vertical spacing is uniform
         # (dz/2, 3dz/2, ...) - voxel layers handle that best.
         "drop_k0": True,
-        # Add `ta_derived`: air temperature from theta via a hydrostatic
-        # Exner profile (T = theta * Pi, Pi integrated up the column from
+        # Ensure `ta` - AIR temperature. Not the surface skin temperature,
+        # which is `t_surf` and comes from the surfaces stage; `ta` and
+        # `t_surf` are different quantities and neither is ever named
+        # ta_surf/ta_surface. Derived from theta via a hydrostatic Exner
+        # profile (T = theta * Pi, Pi integrated up the column from
         # surface_pressure). Requires theta, which is added to scalars if
-        # missing. PALM's `p` output is the PERTURBATION pressure and is
-        # deliberately NOT used. If PALM already writes `ta`, listing it in
-        # scalars copies the model's own value, which is preferable.
+        # missing. A derived value is tagged derived_from = "theta" so it
+        # cannot be confused with PALM's own. PALM's `p` output is the
+        # PERTURBATION pressure and is deliberately NOT used. If PALM
+        # already writes `ta`, it is copied - the model's own value is
+        # exact.
         "derive_ta": False,
     },
     "surfaces": {
