@@ -1,5 +1,57 @@
 # Changelog
 
+## 0.16.0
+
+**Wind in 3D**
+
+- New `wind_3d` layer in the wind GeoPackage: LineStringZ arrows at the
+  TRUE sample height (local surface + `height_agl`). The point layer holds
+  2D geometry with the height as an attribute only, so in a 3D scene every
+  level collapsed onto the ground and the 2 m and 10 m samples sat exactly
+  on top of each other. Both layers are written - a line layer reads badly
+  from directly above, a flat point layer reads badly in a scene.
+- `wind.write_lines_3d` (default false), `wind.arrow_scale` (metres per
+  m/s) and `wind.include_w` (tilt with vertical velocity, default false).
+  `speed` and `dir_met` stay HORIZONTAL whether or not w is included, so
+  the two layers stay comparable; with `include_w` the `w` value is also
+  written as a field.
+
+**Canopy volume**
+
+- `lad_3d.nc` gained a length-1 time dimension, so it stays visible while
+  a scene animates the voxel layer instead of dropping out as soon as the
+  time slider moves. The timestamp is the start of the converted window
+  (`bounds.time_from`, else `origin_time`), resolved without opening a 3D
+  output file, so the canopy stage stays independent of the voxel stage.
+- `bad` (basal area density - branches and trunks) is written as a second
+  variable in the SAME file when the static driver has it, since ArcGIS
+  voxel layers carry several variables. Optional and often absent, so its
+  absence is silent. Adding the woody part is what makes a 3D canopy read
+  as trees rather than floating crowns.
+- `lad` is therefore now `(time, z, y, x)`, not `(z, y, x)` - external
+  scripts indexing the file directly need the extra leading axis.
+
+**QGIS styles**
+
+- Vector styles gained a graduated colour ramp over the first output
+  variable, spanning the whole animation (the range is accumulated as the
+  timesteps are written, with no second pass). Until now GeoPackage layers
+  carried only temporal settings and opened in a flat default colour.
+- The polygon layer and its 2D trace layer share ONE ramp definition over
+  the same variable and range, so plan view and 3D scene agree.
+- A `<layer3DRenderer>` block clamps geometry to absolute height, so walls
+  and wind arrows keep their Z in a scene instead of being draped on the
+  terrain. New `qgis_styles_3d` (default true) turns just that block off:
+  the 3D symbol schema has moved between QGIS releases more than the rest
+  of the QML, and the 2D style and temporal settings are unaffected by it.
+
+**Documentation**
+
+- `template.yaml` now says which of the four surface products duplicate
+  each other - `write_walls_gpkg` is a strict subset of
+  `write_all_elements_gpkg` - so the redundant ones can be turned off
+  deliberately. No defaults changed.
+
 ## 0.15.0
 
 **Usability**

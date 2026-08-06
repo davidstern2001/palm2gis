@@ -86,6 +86,7 @@ bounds:
 
 #celsius: false #convert temperatures from kelvin to degrees C
 #qgis_styles: true #write .qml style files next to the layers
+#qgis_styles_3d: true #add a 3D renderer so Z survives in a 3D scene
 
 # Pressure [Pa] at the model's z = 0 (the domain base at origin_z, NOT sea
 # level), used only when deriving air temperature. Default: PALM's
@@ -114,11 +115,22 @@ surfaces:
     file_from: 'OUTPUT/SURFACE_DATA_NETCDF_N02'
     #prefix: 'palm_' #outputs: <prefix><var>_topview.tif, <prefix>walls.gpkg
     #variables: [] #e.g. ['theta_surface']
-    #write_topview_raster: true #topmost upward face per column -> GeoTIFF
-    #write_topview_netcdf: true #the same as CF mesh NetCDF (QGIS animation)
-    #write_walls_gpkg: true #vertical faces as PolygonZ features
-    #wall_lines: true #add 2D-visible wall traces to the GeoPackage
-    #write_all_elements_gpkg: false #every face in one layer (large)
+    # The stage can write the same surfaces in four forms. Turn off what
+    # you do not use - each costs time and disk:
+    #   topview_raster   the only form usable for raster work (map algebra,
+    #                    zonal stats, differencing two scenarios); tiny
+    #   topview_netcdf   the same data as a CF mesh layer, which QGIS
+    #                    animates far better than a large vector layer
+    #   walls_gpkg       vertical faces alone - a strict SUBSET of
+    #                    write_all_elements_gpkg, so redundant when that
+    #                    is on
+    #   all_elements     every face (horizontal and vertical) in one layer;
+    #                    the one to use for 3D scenes. Rows = elem x time
+    #write_topview_raster: true
+    #write_topview_netcdf: true
+    #write_walls_gpkg: true
+    #wall_lines: true #2D-visible traces of the walls (zero footprint in plan)
+    #write_all_elements_gpkg: false
     #layer_name: ~ #default: derived from the output file name
     #derive_ta: false #derive t_surf from the surface potential temperature
 
@@ -134,6 +146,14 @@ wind:
     #heights_agl: [2.0] #metres above the local surface
     #stride: 1 #sample every nth grid point in x and y
 
+    # A second layer, `wind_3d`, of 3D arrows at the true sample height.
+    # The point layer is 2D (height is an attribute only), so in a 3D
+    # scene every level would otherwise collapse onto the ground.
+    #write_lines_3d: false
+    #arrow_scale: 2.0 #metres of arrow per m/s; suit it to the domain
+    #include_w: false #tilt with vertical velocity; speed/dir_met stay
+                      #horizontal either way
+
 ################################## CANOPY ###################################
 # Plant canopy from the static driver. PALM stores `lad` on the `zlad` axis,
 # i.e. height above the local terrain.
@@ -145,4 +165,8 @@ canopy:
     #write_lai: true #<prefix>lai.tif - LAD integrated over the column [m2/m2]
     #write_canopy_height: true #<prefix>canopy_height.tif - highest LAD level
     #lad_threshold: 0.01 #LAD below this counts as no canopy
-    #write_volume: false #full 3D LAD lifted onto absolute heights
+    # Voxel NetCDF of LAD (and BAD, the branch density, when the static
+    # driver has it) lifted onto absolute heights, for an ArcGIS Pro
+    # Local Scene alongside the voxel and surfaces layers. Carries a
+    # single timestamp so it stays visible while the scene animates.
+    #write_volume: false

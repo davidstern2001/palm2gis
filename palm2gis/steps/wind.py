@@ -17,9 +17,9 @@ import numpy as np
 from netCDF4 import Dataset
 
 import geopandas as gpd
-from shapely.geometry import Point
+from shapely.geometry import LineString, Point
 
-from ..log import debug, get_logger, info
+from ..log import debug, get_logger, info, warning
 from .georef import check_product, check_raw_input, select_times
 from .voxel import destagger
 from .qgis_style import (embed_gpkg_style, vector_qml, write_sidecar)
@@ -54,11 +54,21 @@ def stage_wind(cfg, grid):
         debug("[wind] {} columns (stride {}), heights AGL: {} m",
               len(jf), stride, ", ".join(str(h) for h in heights))
 
+        lines_3d = bool(wd["write_lines_3d"])
+        include_w = bool(wd["include_w"])
+        scale = float(wd["arrow_scale"])
+
         # per column: k index of the first level >= local surface + h_agl
         k_idx = {}
+        z_abs = {}
         for h in heights:
             k = np.searchsorted(z, grid.elev[jf, if_] + h)
             k_idx[h] = np.clip(k, 0, nz - 1)
+            # The true height of the sample, for the 3D geometry. The 2D
+            # point layer carried this only as the `height_agl` attribute,
+            # so every level collapsed onto the ground in a 3D scene and
+            # the 2 m and 10 m samples sat exactly on top of each other.
+            z_abs[h] = grid.elev[jf, if_] + h
 
         x_abs = grid.abs_x(grid.x_stat)
         y_abs = grid.abs_y(grid.y_stat)
@@ -79,33 +89,74 @@ def stage_wind(cfg, grid):
                            grid.nx0, grid.nxmax)
             v3 = destagger(nc, "v", it, 0, nz, grid.ny0, grid.nymax,
                            grid.nx0, grid.nxmax)
+            w3 = (destagger(nc, "w", it, 0, nz, grid.ny0, grid.nymax,
+                            grid.nx0, grid.nxmax)
+                  if (include_w and lines_3d) else None)
             parts = []
+            parts3 = []
             for h in heights:
                 k = k_idx[h]
                 u = u3[k, jf, if_]
                 v = v3[k, jf, if_]
                 speed = np.hypot(u, v)
+                # `speed` and `dir_met` stay HORIZONTAL even when the 3D
+                # geometry tilts with w, so the two layers remain directly
+                # comparable and dir_met keeps its meteorological meaning.
                 dir_met = (270.0 - np.degrees(np.arctan2(v, u))) % 360.0
-                parts.append(gpd.GeoDataFrame(
-                    {"time": [dts_tz[it]] * len(pts),
-                     "rec": it,
-                     "height_agl": h,
-                     "u": u.astype(np.float32),
-                     "v": v.astype(np.float32),
-                     "speed": speed.astype(np.float32),
-                     "dir_met": dir_met.astype(np.float32)},
-                    geometry=pts, crs=grid.crs))
+                attrs = {"time": [dts_tz[it]] * len(pts),
+                         "rec": it,
+                         "height_agl": h,
+                         "u": u.astype(np.float32),
+                         "v": v.astype(np.float32),
+                         "speed": speed.astype(np.float32),
+                         "dir_met": dir_met.astype(np.float32)}
+                parts.append(gpd.GeoDataFrame(dict(attrs), geometry=pts,
+                                              crs=grid.crs))
+                if not lines_3d:
+                    continue
+                w = (w3[k, jf, if_] if w3 is not None
+                     else np.zeros_like(u))
+                zb = z_abs[h]
+                segs = [LineString([(x0, y0, z0),
+                                    (x0 + ux * scale, y0 + vy * scale,
+                                     z0 + wz * scale)])
+                        for x0, y0, z0, ux, vy, wz
+                        in zip(x_abs[if_], y_abs[jf], zb, u, v, w)]
+                a3 = dict(attrs)
+                a3["z"] = zb.astype(np.float32)
+                if w3 is not None:
+                    a3["w"] = w.astype(np.float32)
+                parts3.append(gpd.GeoDataFrame(a3, geometry=segs,
+                                               crs=grid.crs))
             frame = (parts[0] if len(parts) == 1
                      else gpd.pd.concat(parts, ignore_index=True))
             frame.to_file(file_to, layer="wind", driver="GPKG",
                           mode="w" if n == 0 else "a")
             n_out += len(frame)
 
+            if lines_3d:
+                f3 = (parts3[0] if len(parts3) == 1
+                      else gpd.pd.concat(parts3, ignore_index=True))
+                # Always appended: the point layer above has already
+                # created (or replaced) the file for this timestep.
+                f3.to_file(file_to, layer="wind_3d", driver="GPKG",
+                           mode="a")
+
         if cfg["qgis_styles"]:
             from .surfaces import _median_step
-            qml = vector_qml("time", _median_step(dts, its))
+            step = _median_step(dts, its)
+            qml = vector_qml("time", step)
             write_sidecar(file_to, qml)
             embed_gpkg_style(file_to, "wind", qml)
+            if lines_3d:
+                embed_gpkg_style(file_to, "wind_3d",
+                                 vector_qml("time", step, geom="line",
+                                            clamp_absolute=True))
         info("[wind] wrote {}: {} pts x {} heights x {} times "
              "(stride {})", cfg.disp(file_to), len(pts), len(heights),
              len(its), stride)
+        if lines_3d:
+            info("[wind] wrote {}: layer 'wind_3d' with {} 3D arrows "
+                 "({} m per m/s, {})", cfg.disp(file_to),
+                 len(pts) * len(heights) * len(its), scale,
+                 "u, v, w" if include_w else "u, v (horizontal)")

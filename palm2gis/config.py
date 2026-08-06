@@ -151,6 +151,23 @@ DEFAULTS = {
         "heights_agl": [2.0],      # sampling heights above the LOCAL
                                    # surface (terrain + buildings) [m]
         "stride": 1,               # keep every n-th grid column
+        # A second layer, `wind_3d`, of LineStringZ arrows at the TRUE
+        # sample height (local surface + height_agl). The point layer holds
+        # 2D geometry with the height only as an attribute, so in a 3D
+        # scene every level collapses onto the ground and the 2 m and 10 m
+        # samples land on top of each other. Both layers are written: a
+        # line layer reads badly from directly above, a flat point layer
+        # reads badly in a scene.
+        "write_lines_3d": False,
+        # Arrow length in metres per m/s. Has to suit the domain: a 1 m
+        # Holesovice cut and a 10 m Prague cut want very different values.
+        "arrow_scale": 2.0,
+        # Tilt the arrows with the vertical velocity. Off by default: it
+        # shows updraughts in street canyons but is harder to read against
+        # buildings. `speed` and `dir_met` stay horizontal either way, so
+        # the two layers remain comparable; with this on, `w` is also
+        # written as a field.
+        "include_w": False,
     },
     # Write QGIS style sidecars (<layer>.qml, plus an embedded style in
     # each GeoPackage) so layers open with their time settings already
@@ -158,6 +175,13 @@ DEFAULTS = {
     # recognised on the vector layers. Harmless for ArcGIS, which ignores
     # them.
     "qgis_styles": True,
+    # Add a 3D renderer block to the vector styles, so wall polygons and
+    # wind arrows keep their true height in a QGIS 3D scene instead of
+    # being draped on the terrain. The 3D symbol schema has moved between
+    # QGIS releases more than the rest of the QML: if a layer refuses to
+    # open, set this to false and the 2D style and temporal settings are
+    # unaffected.
+    "qgis_styles_3d": True,
     # Write temperature variables (theta*, tsurf*/t_surf*, ta*) in degrees
     # Celsius instead of kelvin, in EVERY product: voxel NetCDF, top-view
     # GeoTIFF/mesh NetCDF, and the GeoPackage element layers. Applied at

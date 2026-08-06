@@ -450,6 +450,13 @@ def _elements_gpkg(cfg, grid, nc, its, times, xs, ys, zs, zen, az, sel,
     if path.exists():
         path.unlink()
 
+    # The ramp is built over the FIRST output variable - with one variable
+    # configured (the usual case) that is simply the variable of interest,
+    # and with several it is a defined choice rather than an arbitrary one.
+    _out = list(output_vars(sf, nc.variables))
+    ramp_attr = _out[0][0] if _out else None
+    v_lo = v_hi = None
+
     n_written = 0
     for n, it in enumerate(its):
         rec = {"elem_id": idx,
@@ -468,6 +475,17 @@ def _elements_gpkg(cfg, grid, nc, its, times, xs, ys, zs, zen, az, sel,
         frame.to_file(path, layer=layer, driver="GPKG",
                       mode="w" if n == 0 else "a")
 
+        # Range of the first output variable, accumulated across the
+        # timesteps as they are written, so the graduated ramp in the
+        # style spans the whole animation rather than one frame - and
+        # without a second pass over the data.
+        if ramp_attr is not None and ramp_attr in rec:
+            col = np.asarray(rec[ramp_attr], dtype="f8")
+            col = col[np.isfinite(col)]
+            if col.size:
+                v_lo = col.min() if v_lo is None else min(v_lo, col.min())
+                v_hi = col.max() if v_hi is None else max(v_hi, col.max())
+
         # Vertical faces have a ZERO-AREA footprint in the map plane, so a
         # 2D view of the polygons shows nothing at all. Write their
         # horizontal trace as lines too, in the same GeoPackage, so wall
@@ -483,13 +501,22 @@ def _elements_gpkg(cfg, grid, nc, its, times, xs, ys, zs, zen, az, sel,
 
     qml = None
     if cfg["qgis_styles"]:
-        qml = vector_qml("time", _median_step(dts, its))
+        step = _median_step(dts, its)
+        # The polygon layer carries true Z, so it gets the 3D renderer;
+        # the 2D trace layer shares the SAME ramp over the same variable
+        # and range, so plan view and scene agree.
+        qml = vector_qml("time", step, geom="polygon", attr=ramp_attr,
+                         vmin=v_lo, vmax=v_hi,
+                         clamp_absolute=bool(cfg["qgis_styles_3d"]))
         write_sidecar(path, qml)
         embed_gpkg_style(path, layer, qml)
 
     if want_lines:
         if qml is not None:
-            embed_gpkg_style(path, line_layer, qml)
+            embed_gpkg_style(path, line_layer,
+                             vector_qml("time", step, geom="line",
+                                        attr=ramp_attr, vmin=v_lo,
+                                        vmax=v_hi))
         info("[surfaces] wrote {}: layer '{}' with {} wall traces "
              "(2D-visible)", cfg.disp(path), line_layer, int(wall_idx.size))
     counts = gpd.pd.Series(orient).value_counts().to_dict()

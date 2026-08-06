@@ -32,6 +32,7 @@ import rasterio
 from rasterio.transform import from_origin
 
 from ..log import debug, get_logger, info, warning
+from .georef import parse_time_bound
 from .voxel import write_crs_var
 
 log = get_logger()
@@ -102,8 +103,30 @@ def stage_canopy(cfg, grid):
         lad_rel = np.ma.filled(
             nc.variables["lad"][:, grid.ny0:grid.nymax,
                                 grid.nx0:grid.nxmax], 0.0)
+        # `bad` (basal area density: branch and trunk area per volume) is
+        # the woody companion to `lad`, on the same zlad axis with the same
+        # shape, so it needs no separate handling. It is OPTIONAL - PALM's
+        # own use of it was still under development when the static-driver
+        # specification was published - so its absence is normal and silent
+        # beyond a debug line. Including it is what makes a 3D canopy read
+        # as trees rather than floating crowns.
+        bad_rel = None
+        if "bad" in nc.variables:
+            bad_rel = np.ma.filled(
+                nc.variables["bad"][:, grid.ny0:grid.nymax,
+                                    grid.nx0:grid.nxmax], 0.0)
 
     lad_rel = np.where(np.isfinite(lad_rel) & (lad_rel > 0), lad_rel, 0.0)
+    if bad_rel is not None:
+        bad_rel = np.where(np.isfinite(bad_rel) & (bad_rel > 0), bad_rel, 0.0)
+        if bad_rel.shape != lad_rel.shape:
+            warning("[canopy] 'bad' has shape {} but 'lad' has {} - the two "
+                    "should share the zlad axis; skipping bad.",
+                    bad_rel.shape, lad_rel.shape)
+            bad_rel = None
+        elif not bad_rel.any():
+            debug("[canopy] 'bad' is present but empty inside the cut.")
+            bad_rel = None
     if not lad_rel.any():
         warning("[canopy] 'lad' is present but empty inside the bounds cut "
                 "- no vegetation here.")
@@ -112,7 +135,9 @@ def stage_canopy(cfg, grid):
     dz_lad = (float(zlad[1] - zlad[0])
               if zlad is not None and zlad.size > 1 else grid.dz)
     info("[canopy] {} canopy levels, dz_lad = {:g} m, LAD max = "
-         "{:.3f} m2/m3", lad_rel.shape[0], dz_lad, float(lad_rel.max()))
+         "{:.3f} m2/m3{}", lad_rel.shape[0], dz_lad, float(lad_rel.max()),
+         ", BAD max = {:.3f} m2/m3".format(float(bad_rel.max()))
+         if bad_rel is not None else "")
 
     # -- LAI: vertical integral of LAD -------------------------------------
     if cn["write_lai"]:
@@ -149,20 +174,43 @@ def stage_canopy(cfg, grid):
         if not cfg.prepare_output(path, "canopy"):
             return
         z_all = grid.z_levels()
-        lad_abs = lift_to_absolute(lad_rel, grid.zt, grid.dz, grid.nz)
         kz0, kzmax = grid.nz0, grid.nzmax
-        lad_cut = lad_abs[kz0:kzmax]
         z_out = z_all[kz0:kzmax]
+
+        vols = {"lad": ("leaf area density",
+                        lift_to_absolute(lad_rel, grid.zt, grid.dz,
+                                         grid.nz)[kz0:kzmax])}
+        if bad_rel is not None:
+            vols["bad"] = ("basal area density (branches and trunks)",
+                           lift_to_absolute(bad_rel, grid.zt, grid.dz,
+                                            grid.nz)[kz0:kzmax])
+        lad_cut = vols["lad"][1]
         if not lad_cut.any():
             warning("[canopy] the canopy falls entirely outside the "
                     "vertical cut z[{}:{}] - raise bounds.zmax.",
                     kz0, kzmax)
 
+        # Nominal timestamp for the static field: the start of the window
+        # the rest of the run converts, so it lines up with the first
+        # timestep of the voxel/surface layers in the same scene. Falls
+        # back to origin_time when no window is set. Resolved WITHOUT
+        # opening a 3D output file, so the canopy stage stays independent
+        # of whether the voxel stage runs at all.
+        t_static, t_dt = parse_time_bound(cfg["bounds"].get("time_from"),
+                                          grid.origin_time,
+                                          "bounds.time_from")
+        if t_static is None:
+            t_static = 0.0
+        t_label = (grid.times_to_datetime([t_static])[0]
+                   or "{:g} s".format(t_static))
+
         with Dataset(path, "w", format="NETCDF4") as fout:
             fout.Conventions = "CF-1.8"
-            fout.title = "PALM plant canopy (LAD) on absolute heights"
+            fout.title = ("PALM plant canopy ({}) on absolute heights"
+                          .format(", ".join(sorted(vols)).upper()))
             fout.source = str(src)
 
+            fout.createDimension("time", 1)
             fout.createDimension("x", grid.nxmax - grid.nx0)
             fout.createDimension("y", grid.nymax - grid.ny0)
             fout.createDimension("z", z_out.size)
@@ -187,16 +235,37 @@ def stage_canopy(cfg, grid):
             zv.axis = "Z"
             zv.positive = "up"
 
-            gm = write_crs_var(fout, grid.crs)
-            ov = fout.createVariable("lad", "f4", ("z", "y", "x"),
-                                     fill_value=FILL, zlib=True,
-                                     complevel=4)
-            ov.grid_mapping = gm
-            ov.coordinates = "z y x"
-            ov.units = "m2 m-3"
-            ov.long_name = "leaf area density"
-            ov[:] = np.where(lad_cut > 0, lad_cut, FILL)
+            # The canopy is STATIC, but a scene that animates the voxel
+            # output needs this volume to carry a time axis too, or it
+            # drops out of view as soon as the time slider moves. One
+            # timestep is enough for that and costs nothing in size; the
+            # value is the start of the window the rest of the run is
+            # converting, so the canopy sits at the beginning of the
+            # scene's temporal range rather than at an unrelated instant.
+            tv = fout.createVariable("time", "f8", ("time",))
+            tv[:] = [t_static]
+            tv.standard_name = "time"
+            tv.units = "seconds since {}".format(
+                grid.origin_time.strftime("%Y-%m-%d %H:%M:%S"))
+            tv.calendar = "standard"
+            tv.axis = "T"
+            tv.long_name = ("nominal time of a static field (the canopy "
+                            "does not vary in time)")
 
-        info("[canopy] wrote {}: {} x {} x {} (z,y,x), {} canopy cells",
+            gm = write_crs_var(fout, grid.crs)
+            for name, (long_name, cut) in sorted(vols.items()):
+                ov = fout.createVariable(name, "f4",
+                                         ("time", "z", "y", "x"),
+                                         fill_value=FILL, zlib=True,
+                                         complevel=4)
+                ov.grid_mapping = gm
+                ov.coordinates = "time z y x"
+                ov.units = "m2 m-3"
+                ov.long_name = long_name
+                ov[0] = np.where(cut > 0, cut, FILL)
+
+        info("[canopy] wrote {}: 1 x {} x {} x {} (t,z,y,x), {} at {}, "
+             "{} canopy cells",
              cfg.disp(path), z_out.size, grid.nymax - grid.ny0,
-             grid.nxmax - grid.nx0, int((lad_cut > 0).sum()))
+             grid.nxmax - grid.nx0, ", ".join(sorted(vols)),
+             t_label, int((lad_cut > 0).sum()))
