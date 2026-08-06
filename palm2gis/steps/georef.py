@@ -548,7 +548,20 @@ def select_times(cfg, nc, tag="", grid=None, source=""):
                 "file carries none and none could be rebuilt. Set "
                 "bounds.time_step (and time_start), or select by "
                 "skip_times/n_times instead.")
-        tol = 1.0e-3                      # guard against float round-off
+        # PALM writes output at the first model timestep AT OR AFTER the
+        # target, so record times carry a residue: this run's hourly
+        # surface file holds 3600.73, 7200.73, ... A record nominally at
+        # 16:00 is really at 16:00:00.73, and an exact comparison against
+        # `time_to: "16:00:00"` silently dropped it - the window looked
+        # exclusive at the end when it is meant to be inclusive. Match with
+        # a tolerance tied to the file's OWN spacing, so the residue cannot
+        # cost a record while the next one stays safely out.
+        tol = 1.0
+        tv_all = times[usable]
+        if tv_all.size > 1:
+            step_file = float(np.median(np.diff(tv_all)))
+            if np.isfinite(step_file) and step_file > 0:
+                tol = float(np.clip(0.5 * step_file, 1.0, 60.0))
         keep = usable.copy()
         if t0 is not None:
             keep &= times >= t0 - tol
@@ -637,6 +650,63 @@ def select_times(cfg, nc, tag="", grid=None, source=""):
 
 # _TEMP_VAR_PREFIXES is imported from thermo.py (single source of truth).
 _CELSIUS_UNITS = ("degrees_c", "degc", "celsius", "\N{DEGREE SIGN}c")
+
+
+# Which PALM product each stage needs, and how to recognise it. `file_from`
+# is one key name across four stages that want three DIFFERENT files, which
+# is easy to get wrong and previously surfaced as a confusing KeyError deep
+# inside a stage ("no variable 'theta_surface'") rather than "this is the
+# 3D file, surfaces wants the SURFACE_DATA one".
+PRODUCTS = {
+    "3d": ("3D output", "DATA_3D_NETCDF*",
+           "gridded volume: dimensions x, y, zu_3d/zw_3d"),
+    "surface": ("surface output", "SURFACE_DATA_NETCDF*",
+                "unstructured surface elements listed along the s "
+                "dimension"),
+    "static": ("static driver", "*_static*",
+               "the domain description: zt, buildings, lad - no time axis"),
+}
+
+STAGE_PRODUCT = {"voxel": "3d", "wind": "3d", "surfaces": "surface",
+                 "canopy": "static"}
+
+
+def identify_product(nc):
+    """Which PALM product a file is, from its dimensions. None if unclear."""
+    dims = set(nc.dimensions)
+    if "s" in dims and "x" not in dims:
+        return "surface"
+    if {"zu_3d", "zw_3d"} & dims:
+        return "3d"
+    if "zlad" in dims or ("time" not in dims and "x" in dims):
+        return "static"
+    return None
+
+
+def check_product(nc, tag, source=""):
+    """Raise RuntimeError if *nc* is not the PALM product *tag* needs.
+
+    Recognition is by DIMENSIONS rather than by filename, so a renamed or
+    joined file is judged on what it actually holds.
+    """
+    want = STAGE_PRODUCT.get(tag)
+    if want is None:
+        return
+    got = identify_product(nc)
+    if got is None or got == want:
+        return                      # unrecognised: let the stage try anyway
+
+    w_name, w_glob, w_how = PRODUCTS[want]
+    g_name = PRODUCTS[got][0]
+    raise RuntimeError(
+        "[{tag}] this looks like the {got} file, but the {tag} stage needs "
+        "the {want} ({glob}) - {how}.{src}\n"
+        "  Set {tag}.file_from to your {want} file. The stages read "
+        "different PALM products: voxel and wind take the 3D output, "
+        "surfaces takes the surface output, canopy takes the static "
+        "driver.".format(
+            tag=tag, got=g_name, want=w_name, glob=w_glob, how=w_how,
+            src="\n  Given: {}".format(source) if source else ""))
 
 
 def check_raw_input(nc, grid, tag, source=""):

@@ -185,6 +185,21 @@ Quote clock times. Unquoted, YAML 1.1 reads `13:00` as the sexagesimal number 78
 
 The 3D output is destaggered onto scalar mass centres (`u` averaged over the two x-faces, `v` over the y-faces, `w` over the z-faces), cut by `bounds`, and written with everything a voxel layer needs: `(time, z, y, x)` dimension order, absolute `x`/`y` with CF standard names, a `crs` grid-mapping variable carrying both the OGC WKT and an Esri PE string, and CF time (`seconds since <origin_time>`). Cells inside terrain or buildings carry the `_FillValue` and render as empty space. With `drop_k0: true` (default) the z = 0 level is dropped, making the vertical spacing uniform (`dz/2, 3dz/2, …`), which voxel layers handle best.
 
+### Which PALM file goes where
+
+palm2gis reads three different PALM files. `file_from` appears in four stages but does not mean the same file each time:
+
+| setting | PALM file | typical name |
+| --- | --- | --- |
+| `domain.static_driver` | static driver (model input) | `*_static*` |
+| `domain.p3d` | `_p3d` namelist (model input) | `*_p3d*` |
+| `voxel.file_from` | 3D output | `DATA_3D_NETCDF*` |
+| `wind.file_from` | 3D output — the same file | `DATA_3D_NETCDF*` |
+| `surfaces.file_from` | surface output | `SURFACE_DATA_NETCDF*` |
+| `canopy.file_from` | leave `null` → the static driver | — |
+
+If the names were changed, the contents tell them apart: the 3D output is a gridded volume (dimensions `x`, `y`, `zu_3d`) holding `u`, `v`, `w`, `theta`; the surface output lists individual surface elements along a dimension `s` with `xs`/`ys`/`zs` and `azimuth`/`zenith`. Stages check this at start and stop immediately if they were handed the wrong product, naming both what they got and what they need, rather than failing partway through with a missing-variable error.
+
 ### surfaces — roofs, ground, and walls
 
 The unstructured surface elements are classified by orientation, the same `zenith`/`azimuth` logic `paraview_vis` used to pick quad geometry. Upward-facing elements (zenith 0) are mapped to their grid column and the **topmost** one per column wins — ground in the streets, the roof on buildings — giving a clean 2D raster per variable. Wall elements (zenith 90) are reconstructed as the same vertical quads the VTU writer produced, but as georeferenced PolygonZ features. Elements with any other zenith (sloped roofs) are counted and reported in a warning rather than silently dropped.

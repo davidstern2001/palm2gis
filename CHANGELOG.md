@@ -1,5 +1,54 @@
 # Changelog
 
+## 0.14.0
+
+**Usability**
+
+- Made it clear which PALM file each setting wants. `file_from` appears in
+  four stages that read THREE different products - the 3D output for voxel
+  and wind, the surface output for surfaces, the static driver for canopy -
+  and one key name gave no hint of that. The template opens with a table
+  mapping every setting to its file, each `file_from` says which product it
+  needs and how to recognise it, and the README carries the same table.
+- Stages now verify the product at start, by DIMENSIONS rather than by
+  filename, so a renamed or joined file is judged on what it holds. Pointing
+  surfaces at the 3D output used to fail deep inside the stage with a
+  missing-variable error; it now stops immediately:
+
+      [surfaces] this looks like the 3D output file, but the surfaces stage
+      needs the surface output (SURFACE_DATA_NETCDF*) - unstructured surface
+      elements listed along the s dimension.
+        Given: OUTPUT/DATA_3D_NETCDF_N02
+        Set surfaces.file_from to your surface output file. ...
+
+  An unrecognised file is passed through to the stage as before, so nothing
+  unusual is blocked.
+
+## 0.13.1
+
+**Correctness**
+
+- `bounds.time_to` is now genuinely inclusive. PALM writes output at the
+  first model timestep AT OR AFTER the target, so record times carry a
+  residue - the prague_center files hold 600.73, 1200.73, ... A record
+  nominally at 16:00 is really at 16:00:00.73, and the exact comparison
+  dropped it, costing the last record of every window in every stage.
+  Records are matched with a tolerance of half the file's own spacing
+  (capped at 60 s), so the residue cannot cost a record while the next one
+  stays out.
+
+**Diagnostics**
+
+- The voxel ta line reported `+nan K` for the lowest level whenever that
+  level lay entirely inside terrain, which is normal for a coarse domain
+  where the first output levels sit below the terrain across the whole
+  cut. The offset is now reported from the gap-filled profile the
+  integration actually used, and the buried levels are counted and named
+  with the height of the lowest level holding air. Nothing was wrong with
+  the data: `exner_profile` already interpolated those gaps.
+- An all-terrain z-cut now says so instead of reporting that no valid
+  potential temperature was found.
+
 ## 0.13.0
 
 **Correctness**

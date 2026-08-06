@@ -13,6 +13,36 @@
 # directory); output paths additionally resolve against project.output_dir.
 # ==============================================================
 
+# ==============================================================
+# WHICH PALM FILE GOES WHERE
+# ==============================================================
+# palm2gis reads THREE different PALM files, and each setting below wants a
+# specific one. `file_from` appears in four stages but does NOT mean the
+# same file each time:
+#
+#   setting                  PALM file to point it at        typical name
+#   ---------------------------------------------------------------------
+#   domain.static_driver     STATIC DRIVER (model input)     *_static*
+#   domain.p3d               _p3d NAMELIST (model input)     *_p3d*
+#   voxel.file_from          3D OUTPUT                       DATA_3D_NETCDF*
+#   wind.file_from           3D OUTPUT (the same file)       DATA_3D_NETCDF*
+#   surfaces.file_from       SURFACE OUTPUT                  SURFACE_DATA_*
+#   canopy.file_from         null -> the static driver       (leave null)
+#
+# How to tell the output files apart if the names were changed: the 3D
+# output is a gridded volume (dimensions x, y, zu_3d) and holds u, v, w,
+# theta; the surface output lists individual surface elements along a
+# dimension `s` with xs/ys/zs and azimuth/zenith, and holds *_surface
+# variables. Point a stage at the wrong one and the run stops at once,
+# saying which file it got and which it needs - it will not fail halfway
+# through with a missing-variable error.
+#
+# Averaged vs instantaneous: if the run wrote both (DATA_3D_AV_NETCDF*
+# alongside DATA_3D_NETCDF*), either works. Averaged output is the usual
+# choice for microclimate maps; whichever you choose, the matching output
+# interval is read from the p3d automatically.
+# ==============================================================
+
 project:
   name: project_name
   # Base directory for all relative paths below. Default (null) = the
@@ -126,7 +156,8 @@ bounds:
 # In ArcGIS Pro: Local Scene -> Add Data -> Multidimensional Voxel Layer.
 # Terrain/building cells are NoData (_FillValue = -9999).
 #
-# NOTE on file_from (applies to ALL stages): palm2gis reads RAW PALM output
+# NOTE on file_from (WHICH file each stage wants is listed at the top of
+# this template). palm2gis reads RAW PALM output
 # - local metre coordinates, kelvin, original variable layout - and applies
 # origin_x/origin_y and unit handling itself, from the static driver. If
 # the run is segmented into parts, join them first with the palm_postproc
@@ -136,6 +167,8 @@ bounds:
 # (absolute UTM coordinates, degrees C) is detected and rejected at start.
 voxel:
   enabled: true
+  # [required] The 3D OUTPUT file (gridded volume: x, y, zu_3d; u, v, w,
+  # theta). NOT the static driver and NOT the surface output.
   file_from: OUTPUT/DATA_3D_NETCDF_N02
   file_to: project_voxel.nc           # relative -> project.output_dir
   do_velocity: true                   # destagger and write u, v, w
@@ -162,6 +195,9 @@ voxel:
 # --------------------------------------------------------------
 surfaces:
   enabled: true
+  # [required] The SURFACE OUTPUT file (elements along the `s` dimension,
+  # with theta_surface / t_surf etc). This is a DIFFERENT file from the 3D
+  # output the voxel and wind stages read.
   file_from: OUTPUT/SURFACE_DATA_NETCDF_N02
   prefix: project_                    # output names: <prefix><var>_topview.tif,
                                       #               <prefix>walls.gpkg
@@ -207,6 +243,8 @@ surfaces:
 # dir_met (geographic rotation) and coloured/sized by speed.
 wind:
   enabled: true
+  # [required] The 3D OUTPUT file - the SAME one the voxel stage reads
+  # (wind is sampled from u, v, w). Usually just repeat voxel.file_from.
   file_from: OUTPUT/DATA_3D_NETCDF_N02
   file_to: project_wind.gpkg          # relative -> project.output_dir
   # Sampling heights above the LOCAL surface (terrain + buildings), so the
@@ -254,7 +292,10 @@ surface_pressure: null
 # absolute heights the way paraview_vis did for ParaView.
 canopy:
   enabled: true
-  file_from: null                     # null -> the static driver
+  # Leave null: the canopy (lad) lives in the STATIC DRIVER already given
+  # as domain.static_driver, so there is no separate file to point at.
+  # Set it only to read lad from a different static driver.
+  file_from: null                     # null -> domain.static_driver
   prefix: project_
   write_lai: true                     # <prefix>lai.tif - LAD integrated
                                       # over the column [m2/m2]

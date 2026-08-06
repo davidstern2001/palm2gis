@@ -52,6 +52,27 @@ LAPSE_DRY = G / CP * 1000.0      # ~9.76 K/km
 # ------------------------------
 # 2. EXNER FUNCTION
 # ------------------------------
+def fill_profile_gaps(theta_bar):
+    """Gap-fill a horizontally averaged theta profile; report the gaps.
+
+    Returns (filled, n_filled). A level lying entirely inside terrain or
+    buildings has no air in it, so its horizontal mean is NaN - routine in
+    a coarse domain, where the lowest output levels can sit below the
+    terrain across the whole cut. Those levels are interpolated from the
+    nearest valid ones (flat extrapolation at the ends), because the
+    hydrostatic integration has to step through them to reach the levels
+    that do carry air.
+    """
+    th = np.asarray(theta_bar, dtype="f8").copy()
+    good = np.isfinite(th) & (th > 0)
+    if not good.any():
+        raise ValueError("No valid potential temperature for the Exner "
+                         "profile: every level of the cut is inside "
+                         "terrain. Check the bounds z-range.")
+    idx = np.arange(th.size)
+    return np.interp(idx, idx[good], th[good]), int((~good).sum())
+
+
 def exner_profile(z, theta_bar, p_surface=101325.0):
     """Exner function on the levels `z`, integrated from the surface.
 
@@ -63,15 +84,7 @@ def exner_profile(z, theta_bar, p_surface=101325.0):
     p_surface : pressure at z = 0 [Pa].
     """
     z = np.asarray(z, dtype="f8")
-    th = np.asarray(theta_bar, dtype="f8").copy()
-
-    # fill non-finite entries (levels entirely inside terrain)
-    good = np.isfinite(th) & (th > 0)
-    if not good.any():
-        raise ValueError("No valid potential temperature for the Exner "
-                         "profile.")
-    idx = np.arange(th.size)
-    th = np.interp(idx, idx[good], th[good])
+    th, _ = fill_profile_gaps(theta_bar)
 
     # p_surface applies at z = 0 (the domain base), which is NOT necessarily
     # the lowest OUTPUT level: a bounds z-cut can start well above it. Anchor

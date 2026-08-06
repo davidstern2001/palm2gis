@@ -29,7 +29,7 @@ import geopandas as gpd
 from shapely.geometry import LineString, Polygon
 
 from ..log import debug, get_logger, info, warning
-from .georef import check_raw_input, select_times
+from .georef import check_product, check_raw_input, select_times
 from .thermo import exner_simple, is_temperature, kelvin_to_celsius, \
     theta_to_ta
 from .qgis_style import (embed_gpkg_style, raster_qml, vector_qml,
@@ -522,6 +522,7 @@ def stage_surfaces(cfg, grid):
     # names (whether `t_surf` is copied or derived), and that has to be
     # settled before the overwrite check picks the files to write.
     with Dataset(src_path, "r") as nc:
+        check_product(nc, "surfaces", sf["file_from"])
         check_raw_input(nc, grid, "surfaces", sf["file_from"])
         available = set(nc.variables)
     plan = output_vars(sf, available, verbose=True)

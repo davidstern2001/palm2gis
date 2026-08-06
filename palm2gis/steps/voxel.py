@@ -23,9 +23,9 @@ import numpy as np
 from netCDF4 import Dataset
 
 from ..log import debug, get_logger, info, warning
-from .georef import check_raw_input, select_times
-from .thermo import LAPSE_DRY, exner_profile, is_temperature, \
-    kelvin_to_celsius, theta_to_ta
+from .georef import check_product, check_raw_input, select_times
+from .thermo import LAPSE_DRY, exner_profile, fill_profile_gaps, \
+    is_temperature, kelvin_to_celsius, theta_to_ta
 
 log = get_logger()
 
@@ -113,6 +113,7 @@ def stage_voxel(cfg, grid):
         return
 
     with Dataset(file_from, "r") as nc:
+        check_product(nc, "voxel", vx["file_from"])
         check_raw_input(nc, grid, "voxel", vx["file_from"])
         its, times = select_times(cfg, nc, "voxel", grid, cfg["voxel"]["file_from"])
 
@@ -207,9 +208,21 @@ def stage_voxel(cfg, grid):
                 theta_bar = np.ma.filled(th0.mean(axis=(1, 2)), np.nan)
                 pi = exner_profile(z_out, theta_bar,
                                    p_surface=cfg["surface_pressure"])
-                # What the conversion actually DOES to the numbers, per
-                # level: ta - theta = theta * (Pi - 1).
-                off = np.asarray(theta_bar) * (pi - 1.0)
+                # Report from the GAP-FILLED profile, which is what the
+                # integration used. The raw means are NaN on any level
+                # lying entirely inside terrain - normal in a coarse
+                # domain, where the lowest levels can sit below the terrain
+                # across the whole cut - and reporting those gave a "+nan K"
+                # that looked like a failure when nothing was wrong.
+                th_fill, n_gap = fill_profile_gaps(theta_bar)
+                if n_gap:
+                    info("[voxel] {} of {} levels are entirely inside "
+                         "terrain (lowest air at z = {:.0f} m); their theta "
+                         "is interpolated for the hydrostatic integration, "
+                         "and ta there is terrain fill either way.",
+                         n_gap, len(z_out),
+                         float(z_out[int(np.argmax(np.isfinite(theta_bar)))]))
+                off = th_fill * (pi - 1.0)
                 o0, o1 = float(off[0]), float(off[-1])
                 z0, z1 = float(z_out[0]), float(z_out[-1])
                 if o0 >= 0.0 and o1 >= 0.0:

@@ -20,7 +20,7 @@ import geopandas as gpd
 from shapely.geometry import Point
 
 from ..log import debug, get_logger, info
-from .georef import check_raw_input, select_times
+from .georef import check_product, check_raw_input, select_times
 from .voxel import destagger
 from .qgis_style import (embed_gpkg_style, vector_qml, write_sidecar)
 
@@ -37,6 +37,7 @@ def stage_wind(cfg, grid):
         return
 
     with Dataset(cfg.resolve(wd["file_from"]), "r") as nc:
+        check_product(nc, "wind", wd["file_from"])
         check_raw_input(nc, grid, "wind", wd["file_from"])
         its, times = select_times(cfg, nc, "wind", grid, cfg["wind"]["file_from"])
 
