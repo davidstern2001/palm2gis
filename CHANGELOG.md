@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.15.0
+
+**Usability**
+
+- Rewrote `template.yaml` in the palmmeteo style: every option is listed
+  but COMMENTED OUT at its default, so what is uncommented is exactly what
+  a project has to decide. 314 lines down to 176. The long explanations
+  move to a separate guide; the template keeps only the file map, the time
+  window forms, and the traps that cost a run (the quoted clock time, the
+  hPa/Pa split on surface_pressure).
+
+**Correctness**
+
+- A config section whose every option is commented out parses as None -
+  `bounds:` with nothing under it - and `_deep_merge` took that literally,
+  replacing the whole section with null and failing downstream on
+  NoneType. It now means "leave this section at its defaults", which is
+  the only sensible reading and the one the new template relies on.
+
 ## 0.14.0
 
 **Usability**

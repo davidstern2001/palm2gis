@@ -205,6 +205,14 @@ def _deep_merge(base, override):
     for k, v in (override or {}).items():
         if isinstance(v, dict) and isinstance(out.get(k), dict):
             out[k] = _deep_merge(out[k], v)
+        elif v is None and isinstance(out.get(k), dict):
+            # A section header whose every option is commented out parses as
+            # None - `bounds:` with nothing under it. That means "leave this
+            # section at its defaults", not "replace it with null", and
+            # taking it literally made everything downstream fail on
+            # NoneType. Nulling a whole section has no useful meaning, so
+            # the defaults are kept.
+            continue
         else:
             out[k] = copy.deepcopy(v)
     return out

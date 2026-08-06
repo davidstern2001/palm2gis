@@ -1,314 +1,148 @@
-# ==============================================================
-# palm2gis configuration - FULL REFERENCE
-# ==============================================================
-# This file documents every setting and is self-sufficient (copy it as-is
-# and it works after filling the paths). Hardcoded defaults are applied
-# BEFORE this file, and the merge is deep - a project config only needs to
-# state what differs from the defaults. See config/example_minimal.yaml
-# for what that looks like in practice.
+# palm2gis - a template with all user-selectable configuration options.
 #
-# Template: copy to config/<project>.yaml and edit.
-# Run:  python run_palm2gis.py -c config/<project>.yaml
-# Relative paths resolve against project.root (default: this file's
-# directory); output paths additionally resolve against project.output_dir.
-# ==============================================================
+# Conventions in this file:
+#   uncommented       you have to set it (no usable default)
+#   #commented        optional; the value shown is the default
+#   ~                 null / not set
+#   #inline           what the option does
+#
+# Defaults are applied before this file and merged deeply, so a project
+# config only needs to state what differs. See config/example_minimal.yaml.
+#
+# Copy to config/<project>.yaml and run:
+#   python run_palm2gis.py -c config/<project>.yaml
 
-# ==============================================================
-# WHICH PALM FILE GOES WHERE
-# ==============================================================
-# palm2gis reads THREE different PALM files, and each setting below wants a
-# specific one. `file_from` appears in four stages but does NOT mean the
-# same file each time:
-#
-#   setting                  PALM file to point it at        typical name
-#   ---------------------------------------------------------------------
-#   domain.static_driver     STATIC DRIVER (model input)     *_static*
-#   domain.p3d               _p3d NAMELIST (model input)     *_p3d*
-#   voxel.file_from          3D OUTPUT                       DATA_3D_NETCDF*
-#   wind.file_from           3D OUTPUT (the same file)       DATA_3D_NETCDF*
-#   surfaces.file_from       SURFACE OUTPUT                  SURFACE_DATA_*
-#   canopy.file_from         null -> the static driver       (leave null)
-#
-# How to tell the output files apart if the names were changed: the 3D
-# output is a gridded volume (dimensions x, y, zu_3d) and holds u, v, w,
-# theta; the surface output lists individual surface elements along a
-# dimension `s` with xs/ys/zs and azimuth/zenith, and holds *_surface
-# variables. Point a stage at the wrong one and the run stops at once,
-# saying which file it got and which it needs - it will not fail halfway
-# through with a missing-variable error.
-#
-# Averaged vs instantaneous: if the run wrote both (DATA_3D_AV_NETCDF*
-# alongside DATA_3D_NETCDF*), either works. Averaged output is the usual
-# choice for microclimate maps; whichever you choose, the matching output
-# interval is read from the p3d automatically.
-# ==============================================================
+############################## GENERIC OPTIONS ##############################
 
 project:
-  name: project_name
-  # Base directory for all relative paths below. Default (null) = the
-  # directory of this YAML file; since project configs live in config/,
-  # point root at the simulation data directory instead:
-  root: /storage/data/palm/project_name
-  output_dir: ./gis                   # all generated layers go here
-                                      # (relative to project.root)
-  overwrite: false                    # false: an existing output file is KEPT
-                                      # and its product skipped, so a rerun
-                                      # only fills in what is missing.
-                                      # true: regenerate everything, replacing
-                                      # existing outputs (--overwrite does the
-                                      # same for one run)
+    name: 'project_name' #used in log messages and default output names
+    root: '/storage/data/palm/project_name' #base for all relative paths below
+    #output_dir: './gis' #all generated layers go here (relative to root)
+    #overwrite: false #false: keep existing outputs and skip that product
+
+# Stages to run, in order. A stage runs only if it is listed here AND its
+# own `enabled` is true.
+#stages: ['voxel', 'surfaces', 'wind', 'canopy']
 
 crs:
-  # CRS of the PALM coordinate system. origin_x/origin_y from the static
-  # driver are interpreted in this CRS and EVERY output layer is written in
-  # it (absolute coordinates), so ArcGIS/QGIS place the layers correctly
-  # with no manual shifting.
-  palm: "EPSG:32633"
+    #palm: 'EPSG:32633' #CRS of origin_x/origin_y; all outputs use it
+
+################################ INPUT FILES ################################
+#
+#   domain.static_driver   static driver (model input)   *_static*
+#   domain.p3d             _p3d namelist (model input)   *_p3d*
+#   voxel.file_from        3D output                     DATA_3D_NETCDF*
+#   wind.file_from         3D output (the same file)     DATA_3D_NETCDF*
+#   surfaces.file_from     surface output                SURFACE_DATA_NETCDF*
+#   canopy.file_from       ~ -> domain.static_driver
+#
+# Only raw (or join-only) PALM output is accepted: local metre coordinates,
+# kelvin, original variable layout.
 
 domain:
-  # [required] Static driver of the domain the outputs belong to - for a
-  # child domain the *_static_N02 file. Provides nx, ny, dx, dy, the
-  # terrain + building elevation, origin_x/origin_y and origin_time.
-  static_driver: INPUT/project_static_N02
-  # nz and dz are NOT in the static driver. Either point at the matching
-  # _p3d namelist (parsed with a regex on `key = value` pairs) ...
-  p3d: INPUT/project_p3d_N02
-  # ... or state them explicitly (explicit values win over the p3d file):
-  nz: null
-  dz: null
-  # Timestamps in every output = origin_time + PALM's time-in-seconds.
-  # Default (null) = the static driver's origin_time attribute; a PALM-style
-  # UTC-offset suffix ("... +02") is accepted and dropped. Override here
-  # when the attribute is missing or wrong:
-  origin_time: null                   # "YYYY-MM-DD HH:MM:SS"
+    static_driver: 'INPUT/project_static_N02'
+    p3d: 'INPUT/project_p3d_N02' #nz, dz, output intervals, surface_pressure
+    #nz: ~ #default: from p3d
+    #dz: ~ #default: from p3d
+    #origin_time: ~ #default: origin_time attribute of the static driver
+
+################################## BOUNDS ###################################
 
 bounds:
-  # Cut a subdomain, in metres, LOCAL PALM coordinates (same convention as
-  # the paraview_vis tool). Leave a key out for no cut in that direction.
-  x0: 100
-  xmax: 300
-  y0: 100
-  ymax: 300
-  # zmax = height ABOVE the highest surface (terrain + buildings) inside
-  # the cut subdomain; the vertical index range is derived from it.
-  zmax: 40
-  # ---- Timestep window, in TIME (recommended) --------------------------
-  # NEW IN 0.12.0. State the period ONCE and every stage resolves it
-  # against its own file, so a 10-minute 3D file and an hourly surface file
-  # come out covering the SAME hours. Use this whenever more than one stage
-  # runs - see the note under skip_times for why indices do not travel.
-  # Accepted forms:
-  #   3600                    seconds since origin_time
-  #   "6h" / "90min" / "45s"  the same, with a unit (s/min/h/d)
-  #   "2023-08-24 13:00:00"   an absolute timestamp
-  #   "13:00"                 clock time: the first occurrence at or after
-  #                           origin_time (so "22:00" -> "02:00" crosses
-  #                           midnight the way you would expect)
-  # QUOTE clock times. Unquoted, YAML 1.1 reads 13:00 as the sexagesimal
-  # number 780 and it would silently become an offset in seconds; the run
-  # stops with an error if it finds one, rather than converting the wrong
-  # period.
-  # Both ends are INCLUSIVE; either may be left null for "from the first
-  # record" / "to the last". Setting these makes skip_times / n_times /
-  # time_end inactive.
-  time_from: null
-  time_to: null
+    # Horizontal and vertical cut, in metres of the local PALM coordinates.
+    # Default: the whole domain.
+    #x0: ~
+    #xmax: ~
+    #y0: ~
+    #ymax: ~
+    #zmax: ~ #metres above the highest surface inside the cut
 
-  # ---- Timestep window, in RECORD INDICES ------------------------------
-  # skip_times is how many records to skip from the start; n_times is how
-  # MANY records to convert after that. Simple, but an index is only
-  # meaningful for ONE file: PALM keeps separate output intervals for 3D
-  # and surface output, so record 18 is 3 hours into a 10-minute 3D file
-  # and 18 hours into an hourly surface file. Converting both stages by
-  # index therefore covers two different periods - the run warns when the
-  # windows it selects do not even overlap. Reach for time_from/time_to
-  # instead.
-  #
-  # CHANGED IN 0.10.0: n_times used to be the exclusive END index, so
-  # skip_times: 10 with n_times: 5 selected nothing at all. It is a count
-  # now. Set `time_end` instead if you want the old end-index meaning:
-  #   skip_times: 2, n_times: 5   -> records 2,3,4,5,6   (5 records)
-  #   skip_times: 2, time_end: 5  -> records 2,3,4       (up to index 5)
-  # Clamped per file.
-  skip_times: 0
-  n_times: 99999
-  # time_end: null      # alternative to n_times: exclusive end index
-  # Some PALM files - surface output in particular - are written with the
-  # time variable left at its _FillValue, so they carry no timestamps at all
-  # (the run warns about it). Give the output interval in seconds here to
-  # reconstruct them; without it, those outputs are labelled by record index
-  # (raster band "record 3", the `rec` column in the GeoPackages) and their
-  # `time` field is empty.
-  # Leave both null/0 and palm2gis works it out: when a file's time
-  # variable is unusable it reads the output interval from the p3d
-  # namelist - dt_dosurf_av / dt_dosurf for surface output,
-  # dt_data_output_av / dt_data_output for 3D - together with the matching
-  # skip_time_*, and places the first record one interval in. PALM keeps
-  # these settings separate per product, so a 10-minute 3D file and an
-  # hourly surface file in the same run are handled correctly.
-  # Set them only to override that, or when there is no p3d.
-  time_step: null                     # [s] output interval
-  time_start: null                    # [s] time of the FIRST record
+    # Timestep window in TIME (recommended). Resolved by each stage against
+    # its own file, so files of different output interval cover the same
+    # period. Both ends inclusive; either may be left ~ for the file's own
+    # first/last record. Accepted:
+    #   64800                   seconds since origin_time
+    #   18h                     offset with a unit (s/min/h/d)
+    #   '2023-08-24 13:00:00'   absolute timestamp
+    #   '13:00'                 clock time, first occurrence after
+    #                           origin_time (QUOTE it: unquoted YAML reads
+    #                           a clock time as a number)
+    #time_from: ~
+    #time_to: ~
 
-# --------------------------------------------------------------
-# Stage: voxel - 3D output -> CF NetCDF for the ArcGIS Pro Voxel Layer
-# --------------------------------------------------------------
-# In ArcGIS Pro: Local Scene -> Add Data -> Multidimensional Voxel Layer.
-# Terrain/building cells are NoData (_FillValue = -9999).
-#
-# NOTE on file_from (WHICH file each stage wants is listed at the top of
-# this template). palm2gis reads RAW PALM output
-# - local metre coordinates, kelvin, original variable layout - and applies
-# origin_x/origin_y and unit handling itself, from the static driver. If
-# the run is segmented into parts, join them first with the palm_postproc
-# `join` step and point file_from at the OUTPUT_join/ file. NEVER point it
-# at splitvar/splitz/splittime/coord output: palm2gis and palm_postproc are
-# parallel branches after `join`, not a chain. A coord-processed file
-# (absolute UTM coordinates, degrees C) is detected and rejected at start.
+    # Timestep window in RECORD INDICES. Per file, so stages with different
+    # output intervals will not cover the same period. Ignored when
+    # time_from/time_to are set.
+    #skip_times: 0 #records to skip from the start
+    #n_times: 99999 #COUNT of records after skip_times
+    #time_end: ~ #alternative to n_times: exclusive end index
+
+    # Only needed when a file's time variable is all fill and the p3d gives
+    # no output interval for that product.
+    #time_step: ~ #default: from p3d
+    #time_start: ~ #default: from p3d
+
+############################## OUTPUT OPTIONS ###############################
+
+#celsius: false #convert temperatures from kelvin to degrees C
+#qgis_styles: true #write .qml style files next to the layers
+
+# Pressure [Pa] at the model's z = 0 (the domain base at origin_z, NOT sea
+# level), used only when deriving air temperature. Default: PALM's
+# surface_pressure from the p3d, which the namelist gives in hPa. Set here
+# only to override it, and then in PASCALS.
+#surface_pressure: ~
+
+################################### VOXEL ###################################
+# 3D volume -> ArcGIS Pro voxel NetCDF (Local Scene -> Add Data ->
+# Multidimensional Voxel Layer). Terrain and building cells are NoData.
+
 voxel:
-  enabled: true
-  # [required] The 3D OUTPUT file (gridded volume: x, y, zu_3d; u, v, w,
-  # theta). NOT the static driver and NOT the surface output.
-  file_from: OUTPUT/DATA_3D_NETCDF_N02
-  file_to: project_voxel.nc           # relative -> project.output_dir
-  do_velocity: true                   # destagger and write u, v, w
-  scalars: ["theta"]                  # scalars copied (and cut) as-is
-  # Drop the z = 0 level so vertical spacing is uniform (dz/2, 3dz/2, ...).
-  # Voxel layers handle a uniform spacing best; keep true unless you
-  # specifically need the surface level.
-  drop_k0: true
-  # Ensure `ta` (actual AIR TEMPERATURE) is present. If the file already
-  # holds PALM's own `ta` it is copied - that value is exact. Only when it
-  # is absent is it reconstructed from potential temperature:
-  # T = theta * Pi, with the Exner function Pi integrated hydrostatically
-  # up the column (dPi/dz = -g/(cp*theta)) from surface_pressure below.
-  # Roughly theta - 0.98 K per 100 m, plus the surface-pressure offset.
-  # theta is added to scalars automatically when needed, and a derived
-  # variable carries derived_from = "theta" so it is never mistaken for
-  # the model's own.
-  # NOTE: PALM's `p` output is the PERTURBATION pressure and must not be
-  # used as absolute pressure; it is deliberately ignored here.
-  derive_ta: false
+    #enabled: false
+    file_from: 'OUTPUT/DATA_3D_NETCDF_N02'
+    file_to: 'project_voxel.nc' #relative -> project.output_dir
+    #do_velocity: true #destagger and write u, v, w
+    #scalars: [] #copied and cut as-is, e.g. ['theta', 'rh']
+    #drop_k0: true #drop z = 0 so the vertical spacing is uniform
+    #derive_ta: false #ensure `ta`: PALM's own if present, else theta * Exner
 
-# --------------------------------------------------------------
-# Stage: surfaces - SURFACE_DATA -> top-view GeoTIFF + wall quads
-# --------------------------------------------------------------
+################################# SURFACES ##################################
+# Surface elements -> top-view rasters + wall polygons.
+
 surfaces:
-  enabled: true
-  # [required] The SURFACE OUTPUT file (elements along the `s` dimension,
-  # with theta_surface / t_surf etc). This is a DIFFERENT file from the 3D
-  # output the voxel and wind stages read.
-  file_from: OUTPUT/SURFACE_DATA_NETCDF_N02
-  prefix: project_                    # output names: <prefix><var>_topview.tif,
-                                      #               <prefix>walls.gpkg
-  variables: ["theta_surface"]
-  # Topmost upward-facing element per grid column (ground + roofs - what a
-  # nadir thermal camera sees) -> one multiband GeoTIFF per variable,
-  # band = timestep, band description = timestamp.
-  write_topview_raster: true
-  # The same top-view fields as a CF NetCDF, opened in QGIS as a MESH
-  # layer (Add Layer -> Add Mesh Layer). MDAL reads the CF time axis
-  # natively, so the Temporal Controller works with no style sidecar and
-  # no band-to-time mapping - the reliable route for animation in QGIS.
-  # All variables share one file, <prefix>surface_2d.nc, as separate
-  # dataset groups. ArcGIS users can ignore it and use the GeoTIFFs.
-  write_topview_netcdf: true
-  # Wall elements -> vertical PolygonZ quads in a GeoPackage, long format
-  # with a `time` field (enable time on the layer for the ArcGIS time
-  # slider; view in a Local Scene for 3D wall temperatures). Grows as
-  # n_walls x n_times rows - trim bounds/n_times for large domains.
-  # Ensure `t_surf` (actual SURFACE temperature) is present. PALM's own
-  # t_surf is used when the file has it; otherwise it is derived from the
-  # surface POTENTIAL temperature - theta_surface or theta_surf, both
-  # spellings accepted - at each face's own height. Appears in the
-  # raster, the mesh NetCDF and the element layers alike.
-  derive_ta: false
-  write_walls_gpkg: true
-  # EVERY surface element of the static driver geometry in one GeoPackage:
-  # ground, roofs and all four wall orientations, each as a PolygonZ with
-  # the configured variables. Extra columns: `orient` (up / down / wall_N /
-  # wall_E / wall_S / wall_W) for symbology and filtering, `z` (absolute
-  # face height) and `z_agl` (height above that column's terrain, which
-  # separates roofs from ground even when buildings_2d is empty).
-  # This is the complete surface-temperature picture and the largest
-  # output - rows = n_elements x n_times, so keep bounds/n_times tight.
-  write_all_elements_gpkg: false
-  layer_name: null                    # layer name inside the GeoPackage
+    #enabled: false
+    file_from: 'OUTPUT/SURFACE_DATA_NETCDF_N02'
+    #prefix: 'palm_' #outputs: <prefix><var>_topview.tif, <prefix>walls.gpkg
+    #variables: [] #e.g. ['theta_surface']
+    #write_topview_raster: true #topmost upward face per column -> GeoTIFF
+    #write_topview_netcdf: true #the same as CF mesh NetCDF (QGIS animation)
+    #write_walls_gpkg: true #vertical faces as PolygonZ features
+    #wall_lines: true #add 2D-visible wall traces to the GeoPackage
+    #write_all_elements_gpkg: false #every face in one layer (large)
+    #layer_name: ~ #default: derived from the output file name
+    #derive_ta: false #derive t_surf from the surface potential temperature
 
-# --------------------------------------------------------------
-# Stage: wind - 3D output -> wind vector point layer
-# --------------------------------------------------------------
-# Points carry u, v, speed and dir_met (meteorological direction, degrees
-# FROM which the wind blows). Symbolise with an arrow marker rotated by
-# dir_met (geographic rotation) and coloured/sized by speed.
+################################### WIND ####################################
+# Wind vectors sampled above the LOCAL surface, so the levels follow streets
+# and rooftops alike. Points carry u, v, speed and dir_met (the direction
+# the wind blows FROM).
+
 wind:
-  enabled: true
-  # [required] The 3D OUTPUT file - the SAME one the voxel stage reads
-  # (wind is sampled from u, v, w). Usually just repeat voxel.file_from.
-  file_from: OUTPUT/DATA_3D_NETCDF_N02
-  file_to: project_wind.gpkg          # relative -> project.output_dir
-  # Sampling heights above the LOCAL surface (terrain + buildings), so the
-  # 2 m level follows streets AND rooftops - what pedestrian-level wind
-  # maps need, unlike a fixed-z slice.
-  heights_agl: [2.0, 10.0]
-  stride: 4                           # keep every n-th grid column
+    #enabled: false
+    file_from: 'OUTPUT/DATA_3D_NETCDF_N02' #same file as voxel
+    file_to: 'project_wind.gpkg' #relative -> project.output_dir
+    #heights_agl: [2.0] #metres above the local surface
+    #stride: 1 #sample every nth grid point in x and y
 
-# Write temperature variables (theta*, tsurf*/t_surf*, ta*) in degrees
-# Celsius instead of kelvin, in every product: voxel NetCDF, top-view
-# GeoTIFF + mesh NetCDF, and the GeoPackage element layers. Conversion
-# happens at write time only - the ta derivation still runs in kelvin,
-# NoData cells keep their -9999 fill value, and the NetCDF `units`
-# attributes are set to "degC". Inputs must remain raw kelvin either way
-# (the raw-input guard rejects pre-converted files).
-celsius: false
+################################## CANOPY ###################################
+# Plant canopy from the static driver. PALM stores `lad` on the `zlad` axis,
+# i.e. height above the local terrain.
 
-# Write QGIS style sidecars next to every layer (<layer>.qml) and store the
-# style inside each GeoPackage as well, so layers open with their time
-# settings already configured: each raster band mapped to its time range
-# (QGIS 3.38+ "Fixed Time Range Per Band"), and the `time` field recognised
-# on the vector layers. ArcGIS ignores these files.
-qgis_styles: true
-
-# Pressure at the model's z = 0 level (the domain base, at origin_z - NOT
-# sea level). Used only when deriving air temperature.
-#
-# Leave it null and it is read from the p3d: PALM's own `surface_pressure`,
-# which the NAMELIST GIVES IN hPa and which is converted to Pa here. Set it
-# here only to override the namelist, or when there is no p3d - and then in
-# PASCALS.
-#
-# It matters: T scales as (p/p0)^0.286, so a 10 hPa error shifts the result
-# by ~0.85 K. That is a constant offset, harmless for patterns and
-# gradients, but relevant against measurements. The 101325 Pa fallback is
-# the standard atmosphere at SEA LEVEL and is wrong for any elevated
-# domain, which is why the p3d is preferred.
-surface_pressure: null
-
-# --------------------------------------------------------------
-# Stage: canopy - plant canopy (LAD) from the static driver
-# --------------------------------------------------------------
-# PALM stores `lad` on the `zlad` axis, which is height ABOVE THE LOCAL
-# TERRAIN. The rasters below need no lift; the volume is lifted onto
-# absolute heights the way paraview_vis did for ParaView.
 canopy:
-  enabled: true
-  # Leave null: the canopy (lad) lives in the STATIC DRIVER already given
-  # as domain.static_driver, so there is no separate file to point at.
-  # Set it only to read lad from a different static driver.
-  file_from: null                     # null -> domain.static_driver
-  prefix: project_
-  write_lai: true                     # <prefix>lai.tif - LAD integrated
-                                      # over the column [m2/m2]
-  write_canopy_height: true           # <prefix>canopy_height.tif - highest
-                                      # level with LAD > lad_threshold, in
-                                      # metres above the LOCAL terrain.
-                                      # Derived from LAD itself, so it does
-                                      # not need buildings_2d.
-  lad_threshold: 0.01
-  write_volume: false                 # <prefix>lad_3d.nc - LAD on absolute
-                                      # heights (ArcGIS voxel / QGIS mesh).
-                                      # Respects the bounds z-cut, so raise
-                                      # bounds.zmax above the tree tops.
-
-# Stage order; also the default for the --stages CLI flag.
-stages: [voxel, surfaces, wind, canopy]
+    #enabled: false
+    #file_from: ~ #~ -> domain.static_driver
+    #prefix: 'palm_'
+    #write_lai: true #<prefix>lai.tif - LAD integrated over the column [m2/m2]
+    #write_canopy_height: true #<prefix>canopy_height.tif - highest LAD level
+    #lad_threshold: 0.01 #LAD below this counts as no canopy
+    #write_volume: false #full 3D LAD lifted onto absolute heights
