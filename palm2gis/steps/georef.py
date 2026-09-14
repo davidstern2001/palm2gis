@@ -18,6 +18,8 @@ from pyproj import CRS
 
 from ..log import debug, get_logger, info, progress, warning
 from .thermo import TEMP_PREFIXES as _TEMP_VAR_PREFIXES
+from .thermo import CELSIUS_UNITS as _THERMO_CELSIUS_UNITS
+from .thermo import CELSIUS_PREFIXES as _THERMO_CELSIUS_PREFIXES
 
 log = get_logger()
 
@@ -35,7 +37,7 @@ class Grid:
                  "crs", "crs_raw",
                  "zt", "elev", "x_stat", "y_stat", "p3d",
                  "nx0", "nxmax", "ny0", "nymax", "nz0", "nzmax",
-                 "zt_min", "zt_max")
+                 "zt_min", "zt_max", "zmax_req")
 
     def rio_crs_candidates(self):
         """CRS candidates for rasterio, best first.
@@ -77,6 +79,23 @@ class Grid:
 
     def abs_y(self, y_local):
         return np.asarray(y_local) + self.origin_y
+
+    def abs_z(self, z_local):
+        """PALM height above the domain base -> height above sea level.
+
+        PALM's z = 0 sits at origin_z, so every zu_3d / zs / terrain value
+        is RELATIVE. x and y were already being shifted by origin_x /
+        origin_y while z was written raw, which put voxels, LAD, surface
+        quads and wind arrows origin_z metres too low - 175 m for the
+        Holesovice domain.
+
+        NOT for thermodynamics. exner_profile / exner_simple pair z with
+        `surface_pressure`, which is defined as the pressure at the
+        model's z = 0; feeding them absolute heights would put a second,
+        larger error on every derived temperature. Keep a relative z for
+        those and use this only for output geometry.
+        """
+        return np.asarray(z_local) + self.origin_z
 
     def times_to_datetime(self, seconds, tz_aware=False):
         """Absolute timestamps for PALM's time-in-seconds. Entries that are
@@ -243,12 +262,14 @@ def process_static_driver(cfg):
         z = g.z_levels()
         g.nz0 = int(max(np.searchsorted(z, g.zt_min) - 1, 0))
         zmax = bnd.get("zmax", 1.0e30)
+        g.zmax_req = float(zmax)
         g.nzmax = int(min(np.searchsorted(z, g.zt_max + zmax) + 1, z.size))
 
         # domain origin
         g.origin_x = float(nc.origin_x)
         g.origin_y = float(nc.origin_y)
-        g.origin_z = float(getattr(nc, "origin_z", 0.0))
+        g.origin_z = float(dom["origin_z"]) if dom.get("origin_z") is not None \
+            else float(getattr(nc, "origin_z", 0.0))
         g.origin_time = _parse_origin_time(dom["origin_time"],
                                            getattr(nc, "origin_time", None))
 
@@ -257,6 +278,15 @@ def process_static_driver(cfg):
          g.origin_x, g.origin_y, cfg["crs"]["palm"])
     info("[static] cut x[{}:{}] y[{}:{}] z[{}:{}], t0 = {}",
          g.nx0, g.nxmax, g.ny0, g.nymax, g.nz0, g.nzmax, g.origin_time)
+    if g.origin_z:
+        info("[static] origin_z = {:.2f} m - z output is height above sea "
+             "level.", g.origin_z)
+    else:
+        warning("[static] origin_z is 0 (absent or unset in the static "
+                "driver): z output will be height above the DOMAIN BASE, "
+                "not above sea level, and 3D layers will sit too low in "
+                "ArcGIS Pro. Set domain.origin_z if the domain is above "
+                "sea level.")
     return g
 
 
@@ -648,8 +678,17 @@ def select_times(cfg, nc, tag="", grid=None, source=""):
 # ta-from-theta derivation. `coord` marks its work unambiguously, so this
 # is detected and rejected with an explanation instead of failing silently.
 
-# _TEMP_VAR_PREFIXES is imported from thermo.py (single source of truth).
-_CELSIUS_UNITS = ("degrees_c", "degc", "celsius", "\N{DEGREE SIGN}c")
+# _TEMP_VAR_PREFIXES and the unit lists are imported from thermo.py
+# (single source of truth). The local copy this replaces listed
+# "degrees_c" but not "degree_c", so it missed PALM's own truncated
+# "degree_" entirely.
+#
+# `ta*` is deliberately EXCLUDED from the Celsius signal below. PALM
+# writes `ta` and `ta_2m*` in degrees Celsius natively, so "this
+# temperature is in degC" is not evidence of post-processing for those -
+# it is what a raw file looks like. Only the variables PALM writes in
+# kelvin (theta*, tsurf*, t_surf*) can testify here.
+_COORD_EVIDENCE_PREFIXES = ("theta", "tsurf", "t_surf")
 
 
 # Which PALM product each stage needs, and how to recognise it. `file_from`
@@ -709,6 +748,68 @@ def check_product(nc, tag, source=""):
             src="\n  Given: {}".format(source) if source else ""))
 
 
+def resolve_z_range(nc, grid, tag, z_coord="zu_3d"):
+    """Vertical index range for *nc*, against the FILE's own z axis.
+
+    grid.nz0 / grid.nzmax come from `nz` and `dz`, i.e. from the FULL
+    model grid. That is only the same axis the file has when nothing has
+    already cut it. Feed palm2gis a palm_postproc splitz output and the
+    same `bounds.zmax` silently produced a different result - 19 m from
+    OUTPUT_splitvar, 11 m from OUTPUT_splitz, with no warning - because
+    indices derived from the full axis were applied to a truncated one.
+
+    Recomputing from the file's own levels makes `bounds.zmax` mean the
+    same thing either way. Falls back to the configured range when the
+    file has no usable z axis.
+    """
+    label = "[{}] ".format(tag) if tag else ""
+    if z_coord not in nc.variables:
+        return grid.nz0, grid.nzmax
+
+    z_file = np.asarray(nc.variables[z_coord][:], dtype=float)
+    nz0 = int(max(np.searchsorted(z_file, grid.zt_min) - 1, 0))
+    nzmax = int(min(np.searchsorted(z_file, grid.zt_max + grid.zmax_req) + 1,
+                    z_file.size))
+
+    pre_cut = getattr(nc, "palm_postproc_z_max", None)
+    if pre_cut is not None:
+        warning("{}this file was already cut to z <= {} m by "
+                "palm_postproc splitz, so bounds.zmax is resolved against "
+                "the {} levels that survived, not the full model grid.",
+                label, pre_cut, z_file.size)
+
+    if (nz0, nzmax) != (grid.nz0, grid.nzmax):
+        debug("{}z range from the file's own axis: [{}:{}] "
+              "(nz/dz would have given [{}:{}])",
+              label, nz0, nzmax, grid.nz0, grid.nzmax)
+    return nz0, nzmax
+
+
+def require_variables(nc, names, tag, source="", hint=""):
+    """Raise a readable error when *nc* lacks any of *names*.
+
+    Without this a palm_postproc splitvar file - one variable per file by
+    design - failed with a bare `KeyError: 'u'` from somewhere inside the
+    stage, which says nothing about the cause or the fix.
+    """
+    missing = [n for n in names if n not in nc.variables]
+    if not missing:
+        return
+    have = ", ".join(sorted(v for v in nc.variables
+                            if nc.variables[v].dimensions
+                            and nc.variables[v].dimensions[0] == "time"))
+    raise RuntimeError(
+        "[{}] this file does not contain {}. It holds: {}.{}\n"
+        "  A palm_postproc splitvar/splitz/splittime file holds ONE "
+        "variable (or one group) per file by design, so a stage that "
+        "needs several has to read the joined file instead - or be "
+        "configured for what this one actually has.{}".format(
+            tag, ", ".join("'{}'".format(m) for m in missing),
+            have or "(no time-dependent variables)",
+            "\n  Given: {}".format(source) if source else "",
+            "\n  {}".format(hint) if hint else ""))
+
+
 def check_raw_input(nc, grid, tag, source=""):
     """Raise RuntimeError if *nc* looks like palm_postproc `coord` output.
 
@@ -716,13 +817,25 @@ def check_raw_input(nc, grid, tag, source=""):
       a) x/y coordinate variable with standard_name projection_*_coordinate
          (written by coord when it overwrites local coords with UTM);
       b) x[0] far outside the local domain extent (absolute easting);
-      c) a temperature variable in degrees C (coord's K -> degC conversion).
+      c) a KELVIN-defined temperature variable arriving in degrees C.
 
     Surface-output files have no `x`/`y` dimension coordinates (elements
     are listed along `s` with xs/ys), so (a)/(b) are skipped when `x` is
     absent and (c) alone decides.
+
+    A file stamped `palm_postproc_stage = "join"` short-circuits all
+    three. join output is the intended feed for palm2gis, and a positive
+    marker beats inferring safety from the absence of coord's
+    fingerprints - which is what signal (c) used to do badly enough to
+    nearly reject raw files containing PALM's own Celsius `ta`.
     """
     label = "[{}] ".format(tag) if tag else ""
+
+    stage = str(getattr(nc, "palm_postproc_stage", "")).strip().lower()
+    if stage == "join":
+        debug("{}input is palm_postproc join output - raw-input guard "
+              "satisfied by its stage marker.", label)
+        return
     src = " ({})".format(source) if source else ""
     reject = None
 
@@ -741,16 +854,18 @@ def check_raw_input(nc, grid, tag, source=""):
                           "domain extent of {:.1f} m - these are absolute "
                           "coordinates".format(x0, extent))
 
-    # c) - converted temperature units
+    # c) - kelvin-defined temperatures that arrived in Celsius
     if reject is None:
         for name in nc.variables:
-            if not name.lower().startswith(_TEMP_VAR_PREFIXES):
+            if not name.lower().startswith(_COORD_EVIDENCE_PREFIXES):
                 continue
-            units = str(getattr(nc.variables[name], "units", "")).lower()
-            if units.strip() in _CELSIUS_UNITS:
-                reject = ("variable '{}' has units '{}', i.e. already "
-                          "converted from kelvin".format(
-                              name, getattr(nc.variables[name], "units")))
+            units = str(getattr(nc.variables[name], "units", "")).strip().lower()
+            units = units.replace(" ", "")
+            if units in _THERMO_CELSIUS_UNITS or (
+                    units and units.startswith(_THERMO_CELSIUS_PREFIXES)):
+                reject = ("variable '{}' has units '{}' but PALM writes it "
+                          "in kelvin, i.e. it has already been converted"
+                          .format(name, getattr(nc.variables[name], "units")))
                 break
 
     if reject is not None:

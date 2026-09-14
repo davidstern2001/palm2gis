@@ -175,7 +175,10 @@ def stage_canopy(cfg, grid):
             return
         z_all = grid.z_levels()
         kz0, kzmax = grid.nz0, grid.nzmax
-        z_out = z_all[kz0:kzmax]
+        # Absolute height for the output axis. lift_to_absolute() below is
+        # unrelated - it lifts the terrain-following LAD onto the model
+        # grid and still works in RELATIVE levels, as grid.zt is relative.
+        z_out = grid.abs_z(z_all[kz0:kzmax])
 
         vols = {"lad": ("leaf area density",
                         lift_to_absolute(lad_rel, grid.zt, grid.dz,
@@ -230,7 +233,8 @@ def stage_canopy(cfg, grid):
             zv = fout.createVariable("z", "f8", ("z",))
             zv[:] = z_out
             zv.standard_name = "height"
-            zv.long_name = "height above domain base"
+            zv.long_name = ("height above sea level (PALM zu + origin_z)")
+            zv.palm2gis_origin_z = float(grid.origin_z)
             zv.units = "m"
             zv.axis = "Z"
             zv.positive = "up"

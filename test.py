@@ -40,6 +40,9 @@ CRS = "+proj=utm +zone=33 +datum=WGS84 +units=m +no_defs"
 NX, NY, NZ = 20, 20, 12
 DX = DY = DZ = 2.0
 ORIGIN_X, ORIGIN_Y = 458000.0, 5546000.0
+# Deliberately NOT zero: every z in every product is relative to this, and
+# a 0 here is what let the vertical misalignment ship unnoticed.
+ORIGIN_Z = 175.0
 ORIGIN_TIME = "2026-07-15 10:00:00 +02"
 NT = 3
 
@@ -89,6 +92,7 @@ def build_dataset(root):
     with Dataset(root / "test_static", "w", format="NETCDF4") as nc:
         nc.origin_x = ORIGIN_X
         nc.origin_y = ORIGIN_Y
+        nc.origin_z = ORIGIN_Z
         nc.origin_time = ORIGIN_TIME
         nc.createDimension("x", NX)
         nc.createDimension("y", NY)
@@ -141,8 +145,10 @@ def build_dataset(root):
         nc.createVariable("zu_3d", "f4", ("zu_3d",))[:] = zu
         nc.createVariable("zw_3d", "f4", ("zw_3d",))[:] = zw
 
-        def mk(name, dims, base):
+        def mk(name, dims, base, units=None):
             v = nc.createVariable(name, "f4", dims, fill_value=-9999.0)
+            if units is not None:
+                v.units = units
             for t in range(NT):
                 shp = tuple(len(nc.dimensions[d]) for d in dims[1:])
                 data = base + 0.1 * t + 0.05 * rng.standard_normal(shp)
@@ -153,7 +159,7 @@ def build_dataset(root):
         mk("u", ("time", "zu_3d", "y", "xu"), 2.0)
         mk("v", ("time", "zu_3d", "yv", "x"), 1.0)
         mk("w", ("time", "zw_3d", "y", "x"), 0.1)
-        mk("theta", ("time", "zu_3d", "y", "x"), 300.0)
+        mk("theta", ("time", "zu_3d", "y", "x"), 300.0, units="K")
 
     # -- surface output (unstructured: tops + two building faces) ----------
     xs, ys, zs, zen, az = [], [], [], [], []
@@ -208,7 +214,7 @@ surfaces:
   file_from: test_surf
   prefix: test_
   variables: ["theta_surface"]
-  derive_ta: true
+  derive_t_surf: true
   write_all_elements_gpkg: true
 canopy:
   enabled: true
@@ -220,6 +226,7 @@ wind:
   file_to: test_wind.gpkg
   heights_agl: [2.0, 10.0]
   stride: 2
+  grid_to: test_wind.nc
 """)
 
 
@@ -308,14 +315,14 @@ def verify_outputs(out):
 
     # PALM's own variables must WIN over derivation
     from palm2gis.steps.surfaces import output_vars
-    sf_native = {"variables": ["theta_surface"], "derive_ta": True}
+    sf_native = {"variables": ["theta_surface"], "derive_t_surf": True}
     plan = output_vars(sf_native, {"theta_surface", "t_surf"})
     check(("t_surf", "t_surf", False) in plan,
           "thermo: native t_surf preferred over deriving it", failures)
     plan = output_vars(sf_native, {"theta_surface"})
     check(("t_surf", "theta_surface", True) in plan,
           "thermo: t_surf derived when the file lacks it", failures)
-    plan = output_vars({"variables": ["theta_surf"], "derive_ta": True},
+    plan = output_vars({"variables": ["theta_surf"], "derive_t_surf": True},
                        {"theta_surf"})
     check(("t_surf", "theta_surf", True) in plan,
           "thermo: the theta_surf spelling is accepted too", failures)
@@ -487,8 +494,14 @@ def verify_outputs(out):
         # the test terrain slopes across the tree block, so the SAME
         # canopy must land on different absolute levels per column -
         # which is exactly what the height-above-terrain lift is for
-        zocc = _np_thermo.asarray(nc["z"][:])[
-            (lad > 0).any(axis=(1, 2))]
+        # lad is (time, z, y, x): the canopy volume carries a length-1
+        # time axis so it stays visible while a scene's time slider
+        # moves. Reduce over every axis except z rather than assuming a
+        # 3D array, which is what this used to do - and it raised
+        # IndexError, so the self-test could not certify anything.
+        z_axis = nc["lad"].dimensions.index("z")
+        other = tuple(a for a in range(lad.ndim) if a != z_axis)
+        zocc = _np_thermo.asarray(nc["z"][:])[(lad > 0).any(axis=other)]
         check(zocc.size > 3,
               f"canopy: terrain lift spreads the canopy over {zocc.size} "
               f"absolute levels", failures)
@@ -617,6 +630,175 @@ def verify_overwrite(tmp, pipeline_main):
 # ------------------------------
 # 6. FILL-ONLY TIME VARIABLE
 # ------------------------------
+def verify_regressions(tmp, out, pipeline_main):
+    """Checks for bugs that shipped once and must not ship again.
+
+    Every one of these passed silently before the fix: the values looked
+    like values, the layers looked like layers.
+    """
+    import numpy as _np
+    import pyogrio
+    import struct
+    from netCDF4 import Dataset
+    import sys as _sys
+    _sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from palm2gis.steps.thermo import (TemperatureUnitError,
+                                       temperature_scale)
+
+    failures = []
+
+    # -- temperature scale -------------------------------------------------
+    check(temperature_scale("degree_", "ta") == "C",
+          "units: PALM's truncated 'degree_' reads as Celsius", failures)
+    check(temperature_scale("K", "theta") == "K",
+          "units: 'K' reads as kelvin", failures)
+    try:
+        temperature_scale("m/s", "ta")
+        check(False, "units: an unresolvable unit raises", failures)
+    except TemperatureUnitError:
+        check(True, "units: an unresolvable unit raises", failures)
+
+    # PALM's OWN `ta`, in the units PALM actually writes: Celsius,
+    # truncated to "degree_" by its fixed-length character buffer.
+    # Treating it as kelvin produced a voxel layer reading -253 degC.
+    import shutil as _sh
+    _sh.copy(tmp / "test_3d", tmp / "test_3d_ta")
+    with Dataset(tmp / "test_3d_ta", "a") as nc:
+        v = nc.createVariable("ta", "f4", ("time", "zu_3d", "y", "x"),
+                              fill_value=-9999.0)
+        v.units = "degree_"
+        v[:] = 21.5
+    cfg_ta = tmp / "config_ta.yaml"
+    cfg_ta.write_text(
+        (tmp / "config.yaml").read_text()
+        .replace("file_from: test_3d", "file_from: test_3d_ta")
+        .replace("file_to: test_voxel.nc", "file_to: test_voxel_ta.nc")
+        # The base config never mentions `celsius`, so it takes the
+        # default (false). Add it rather than substitute it.
+        .replace("voxel:\n  enabled: true",
+                 "celsius: true\nvoxel:\n  enabled: true"))
+    pipeline_main(["-c", str(cfg_ta), "--stages", "voxel", "--overwrite"])
+    with Dataset(out / "test_voxel_ta.nc") as nc:
+        nc.set_auto_mask(False)
+        ta = nc["ta"][:]
+        ta = ta[ta != -9999.0]
+        check(19.0 < float(ta.min()) < 25.0,
+              f"units: PALM's own Celsius ta is not converted again "
+              f"({float(ta.min()):.1f} degC)", failures)
+        check(nc["ta"].palm2gis_source_units == "degree_",
+              "units: the source unit is recorded in the output", failures)
+
+    with Dataset(out / "test_voxel.nc") as nc:
+        nc.set_auto_mask(False)
+        th = nc["theta"][:]
+        th = th[th != -9999.0]
+        check(float(th.min()) > 250.0 and nc["theta"].units == "K",
+              "units: theta stays in kelvin regardless of celsius",
+              failures)
+
+        # -- absolute height ---------------------------------------------
+        z = _np.asarray(nc["z"][:])
+        check(float(z.min()) > ORIGIN_Z,
+              f"height: voxel z is above sea level "
+              f"({float(z.min()):.1f} m, origin_z {ORIGIN_Z})", failures)
+        check("coordinates" not in nc["ta"].ncattrs(),
+              "arcgis: no auxiliary `coordinates` attribute", failures)
+        check("esri_pe_string" in nc["crs"].ncattrs(),
+              "arcgis: crs carries esri_pe_string", failures)
+
+    with Dataset(out / "test_lad_3d.nc") as nc:
+        # >=, not >: the lowest model level is z = 0, i.e. exactly
+        # origin_z once shifted.
+        check(float(_np.asarray(nc["z"][:]).min()) >= ORIGIN_Z,
+              "height: LAD z is above sea level", failures)
+
+    # -- the raw-input guard must not reject PALM's own Celsius ta ---------
+    # The run above proves it end to end: a file whose `ta` is in Celsius
+    # went through the voxel stage without being rejected as coord output.
+    check((out / "test_voxel_ta.nc").exists(),
+          "guard: a raw file holding Celsius `ta` is not rejected",
+          failures)
+
+    # -- multipatch --------------------------------------------------------
+    shp = out / "test_surfaces.shp"
+    st = struct.unpack("<i", shp.read_bytes()[32:36])[0]
+    check(st == 31, f"multipatch: shapefile shape type is 31 (got {st})",
+          failures)
+    mp = pyogrio.read_dataframe(shp)
+    check(mp.geometry.iloc[0].has_z,
+          "multipatch: geometry carries z", failures)
+    check(all(len(c) <= 10 for c in mp.columns if c != "geometry"),
+          "multipatch: every field name fits DBF's 10 characters",
+          failures)
+
+    # -- file geodatabase --------------------------------------------------
+    gdb = out / "test_surfaces.gdb"
+    layers = {l[0] for l in pyogrio.list_layers(gdb)}
+    check({"surfaces", "walls"} <= layers,
+          "fgdb: both feature classes written", failures)
+    fg = pyogrio.read_dataframe(gdb, layer="surfaces")
+    check(str(fg["time"].dtype).startswith("datetime64"),
+          "fgdb: time survives as a real datetime", failures)
+    check(fg["azimuth"].isna().any(),
+          "fgdb: horizontal faces carry NULL azimuth, not -9999", failures)
+    check(str(fg["elem_id"].dtype) == "int32",
+          "fgdb: index fields stay integers", failures)
+
+    # -- gridded wind ------------------------------------------------------
+    with Dataset(out / "test_wind.nc") as nc:
+        check(nc["u"].dimensions == ("time", "height", "y", "x"),
+              "wind grid: (time, height, y, x)", failures)
+        check({"u", "v", "w", "speed", "dir_met"} <= set(nc.variables),
+              "wind grid: both renderer pairings present", failures)
+        yv = _np.asarray(nc["y"][:])
+        check(bool(_np.all(_np.diff(yv) > 0)),
+              "wind grid: y ascending (not flipped like a GeoTIFF)",
+              failures)
+        check("standard_name" not in nc["height"].ncattrs(),
+              "wind grid: AGL height claims no CF standard_name", failures)
+
+    # -- wind grid under a SUBDOMAIN CUT -----------------------------------
+    # The main fixture has no x/y cut, so nx0 = 0 and nxmax = NX and every
+    # coordinate-slicing mistake is a no-op. A cut is the only way to catch
+    # one: an early version sliced the already-cut grid.x_stat a second
+    # time and died with "index 100 is out of bounds for axis 0 with
+    # size 100" the moment a real config set bounds.x0.
+    import geopandas as _gpd
+    cfg_cut = tmp / "config_cut.yaml"
+    cfg_cut.write_text(
+        (tmp / "config.yaml").read_text()
+        .replace("bounds:\n  zmax: 10",
+                 "bounds:\n  zmax: 10\n  x0: 6\n  xmax: 30\n"
+                 "  y0: 4\n  ymax: 32")
+        .replace("file_to: test_wind.gpkg",
+                 "file_to: test_wind_cut.gpkg")
+        .replace("grid_to: test_wind.nc", "grid_to: test_wind_cut.nc"))
+    rc = pipeline_main(["-c", str(cfg_cut), "--stages", "wind",
+                        "--overwrite"])
+    check(rc == 0, "wind grid: survives a subdomain cut", failures)
+
+    # The point layer is computed by a separate code path, so agreeing
+    # with it pins the grid's geolocation rather than just its shape.
+    pts = _gpd.read_file(out / "test_wind_cut.gpkg", layer="wind")
+    pts = pts[(pts["rec"] == pts["rec"].min()) & (pts["height_agl"] == 2.0)]
+    with Dataset(out / "test_wind_cut.nc") as nc:
+        gx, gy = _np.asarray(nc["x"][:]), _np.asarray(nc["y"][:])
+        gu, gv = nc["u"][0, 0], nc["v"][0, 0]
+        bad = 0
+        for _, r in pts.iterrows():
+            i = int(_np.argmin(abs(gx - r.geometry.x)))
+            j = int(_np.argmin(abs(gy - r.geometry.y)))
+            if (abs(gx[i] - r.geometry.x) > 1e-6
+                    or abs(gy[j] - r.geometry.y) > 1e-6
+                    or abs(float(gu[j, i]) - r["u"]) > 1e-4
+                    or abs(float(gv[j, i]) - r["v"]) > 1e-4):
+                bad += 1
+    check(bad == 0 and len(pts) > 0,
+          f"wind grid: geolocation matches the point layer under a cut "
+          f"({len(pts)} samples, {bad} mismatches)", failures)
+    return failures
+
+
 def verify_fill_times(tmp, pipeline_main):
     """Some PALM surface files leave the time variable at its _FillValue
     (~1e36). Those values must never be treated as seconds - they overflow
@@ -721,6 +903,7 @@ def main():
         failures += verify_state(tmp, pipeline_main)
 
         print("Verifying handling of a fill-only time variable ...")
+        failures += verify_regressions(tmp, tmp / "out", pipeline_main)
         failures += verify_fill_times(tmp, pipeline_main)
 
         if failures:

@@ -23,9 +23,11 @@ import numpy as np
 from netCDF4 import Dataset
 
 from ..log import debug, get_logger, info, warning
-from .georef import check_product, check_raw_input, select_times
-from .thermo import LAPSE_DRY, exner_profile, fill_profile_gaps, \
-    is_temperature, kelvin_to_celsius, theta_to_ta
+from .georef import (check_product, check_raw_input, require_variables,
+                     resolve_z_range, select_times)
+from .thermo import LAPSE_DRY, convert_temperature, exner_profile, \
+    fill_profile_gaps, is_celsius_exempt, is_temperature, \
+    temperature_scale, theta_to_ta
 
 log = get_logger()
 
@@ -89,13 +91,39 @@ def destagger(nc, var, it, nz0, nzmax, ny0, nymax, nx0, nxmax):
 def write_crs_var(fout, crs):
     """Write a grid_mapping variable ArcGIS and GDAL both understand."""
     cv = fout.createVariable("crs", "i4")
-    for k, v in crs.to_cf().items():
+    cf = crs.to_cf()
+    for k, v in cf.items():
         if k == "crs_wkt":
             continue
         try:
             cv.setncattr(k, v)
         except TypeError:
             pass
+
+    # Esri's netCDF reader builds the spatial reference from
+    # grid_mapping_name and its parameters. It does NOT read crs_wkt or
+    # epsg_code, so a CRS pyproj cannot express in CF (Krovak /
+    # S-JTSK EPSG:5514, for one) leaves ArcGIS with nothing to work from.
+    if "grid_mapping_name" not in cf:
+        warning("[crs] {} has no CF grid mapping - pyproj cannot express "
+                "it as one. GDAL and QGIS will read the WKT, but ArcGIS "
+                "reads grid_mapping_name and will treat this file as "
+                "having an unknown CRS. Reproject to a CRS with a CF "
+                "grid mapping (e.g. UTM) if the output is for ArcGIS.",
+                crs.name)
+
+    # Esri also assumes the WGS 1984 datum for netCDF regardless of what
+    # the file says, so a non-WGS84 datum silently shifts the data.
+    # EPSG names the WGS 84 datum several ways ("WGS 84", "WGS_1984",
+    # "World Geodetic System 1984 ensemble"); all of them are the datum
+    # ArcGIS assumes, so none of them should warn.
+    datum = (crs.datum.name if crs.datum is not None else "")
+    _d = datum.lower().replace("_", " ")
+    is_wgs84 = "wgs 84" in _d or "world geodetic system 1984" in _d
+    if datum and not is_wgs84:
+        warning("[crs] datum is '{}', not WGS 84. ArcGIS assumes WGS 1984 "
+                "for netCDF whatever the file declares, so expect a datum "
+                "shift when this is opened in ArcGIS Pro.", datum)
     cv.spatial_ref = crs.to_wkt()
     cv.crs_wkt = crs.to_wkt()
     cv.esri_pe_string = crs.to_wkt(version="WKT1_ESRI")
@@ -118,9 +146,35 @@ def stage_voxel(cfg, grid):
         its, times = select_times(cfg, nc, "voxel", grid, cfg["voxel"]["file_from"])
 
         z_all = np.asarray(nc.variables["zu_3d"][:])
-        k_off = 1 if (vx["drop_k0"] and grid.nz0 == 0) else 0
-        kz0, kzmax = grid.nz0 + k_off, grid.nzmax
-        z_out = z_all[kz0:kzmax]
+        nz0_f, nzmax_f = resolve_z_range(nc, grid, "voxel")
+        k_off = 1 if (vx["drop_k0"] and nz0_f == 0) else 0
+        kz0, kzmax = nz0_f + k_off, nzmax_f
+        # Two z arrays, deliberately.
+        #   z_rel - height above the domain base, what PALM wrote. The
+        #           Exner profile below pairs it with surface_pressure,
+        #           which is the pressure at the model's z = 0.
+        #   z_out - absolute height, origin_z added. Output geometry only.
+        # Collapsing these would trade a geometry error for a temperature
+        # one.
+        z_rel = z_all[kz0:kzmax]
+        z_out = grid.abs_z(z_rel)
+
+        # An ArcGIS voxel layer requires a REGULARLY gridded z axis.
+        # Two things break it: a PALM stretched grid (dz_stretch_level),
+        # and a cut that keeps k=0, whose spacing runs dz/2 then dz.
+        if z_rel.size > 2:
+            dz_steps = np.diff(z_rel)
+            spread = float(dz_steps.max() - dz_steps.min())
+            if spread > 1.0e-3 * max(1.0, float(abs(dz_steps.mean()))):
+                raise RuntimeError(
+                    "[voxel] the z axis is not regularly spaced "
+                    "(steps {:.3f}..{:.3f} m), which an ArcGIS voxel layer "
+                    "does not accept. Either the PALM run uses a stretched "
+                    "grid (dz_stretch_level), in which case a voxel layer "
+                    "is not possible from these levels, or the cut keeps "
+                    "k = 0 - set voxel.drop_k0: true, or raise bounds.z0 "
+                    "above the first level.".format(
+                        float(dz_steps.min()), float(dz_steps.max())))
 
         scalars = [s for s in vx["scalars"] if s]
         # Air temperature is ENSURED rather than always derived: PALM's own
@@ -141,7 +195,35 @@ def stage_voxel(cfg, grid):
             else:
                 warning("[voxel] derive_ta is on but the file holds neither "
                         "'ta' nor 'theta'.")
-        out_vars = (["u", "v", "w"] if vx["do_velocity"] else []) + scalars
+        do_velocity = bool(vx["do_velocity"])
+        if do_velocity:
+            require_variables(
+                nc, ["u", "v", "w"], "voxel", vx["file_from"],
+                hint="Set voxel.do_velocity: false to write scalars only, "
+                     "or point file_from at the joined file.")
+        require_variables(nc, [v for v in scalars if v != "ta"], "voxel",
+                          vx["file_from"],
+                          hint="Adjust voxel.scalars to what this file "
+                               "holds, or point file_from at the joined "
+                               "file.")
+
+        # P7.3: the staggered axes must have the same number of levels.
+        # splitz cuts zu_3d and zw_3d independently, so a grouped u/v/w
+        # file could arrive with zu_3d and zw_3d of different lengths and
+        # the terrain mask then failed with a bare numpy boolean-index
+        # error deep in the write loop.
+        if do_velocity and "zw_3d" in nc.variables:
+            n_zu = nc.variables["zu_3d"].size
+            n_zw = nc.variables["zw_3d"].size
+            if n_zu != n_zw:
+                raise RuntimeError(
+                    "[voxel] zu_3d has {} levels but zw_3d has {}. The "
+                    "staggered axes have been cut to different lengths, "
+                    "which happens when palm_postproc splitz slices only "
+                    "one of them. Read the joined file, or re-run splitz "
+                    "so both axes are cut alike.".format(n_zu, n_zw))
+
+        out_vars = (["u", "v", "w"] if do_velocity else []) + scalars
         if derive_ta:
             out_vars = out_vars + ["ta"]
 
@@ -173,7 +255,9 @@ def stage_voxel(cfg, grid):
             zv = fout.createVariable("z", "f8", ("z",))
             zv[:] = z_out
             zv.standard_name = "height"
-            zv.long_name = "height above domain base"
+            zv.long_name = ("height above sea level (PALM zu_3d + "
+                            "origin_z)")
+            zv.palm2gis_origin_z = float(grid.origin_z)
             zv.units = "m"
             zv.axis = "Z"
             zv.positive = "up"
@@ -206,7 +290,7 @@ def stage_voxel(cfg, grid):
                                           grid.ny0:grid.nymax,
                                           grid.nx0:grid.nxmax])
                 theta_bar = np.ma.filled(th0.mean(axis=(1, 2)), np.nan)
-                pi = exner_profile(z_out, theta_bar,
+                pi = exner_profile(z_rel, theta_bar,
                                    p_surface=cfg["surface_pressure"])
                 # Report from the GAP-FILLED profile, which is what the
                 # integration used. The raw means are NaN on any level
@@ -220,7 +304,7 @@ def stage_voxel(cfg, grid):
                          "terrain (lowest air at z = {:.0f} m); their theta "
                          "is interpolated for the hydrostatic integration, "
                          "and ta there is terrain fill either way.",
-                         n_gap, len(z_out),
+                         n_gap, len(z_rel),
                          float(z_out[int(np.argmax(np.isfinite(theta_bar)))]))
                 off = th_fill * (pi - 1.0)
                 o0, o1 = float(off[0]), float(off[-1])
@@ -259,12 +343,29 @@ def stage_voxel(cfg, grid):
                 pi = pi[:, None, None]
 
             celsius = bool(cfg["celsius"])
+            target = "C" if celsius else "K"
+            overrides = dict(cfg["temperature_units"] or {})
+            # Resolved once, here, and reused by the data loop below so the
+            # attribute and the number can never disagree.
+            scales = {}
+            for var in out_vars:
+                if not is_temperature(var) or is_celsius_exempt(var):
+                    continue
+                if var == "ta" and derive_ta:
+                    scales[var] = "K"       # derived from theta, so kelvin
+                    continue
+                src_v = nc.variables.get(var)
+                scales[var] = temperature_scale(
+                    getattr(src_v, "units", None) if src_v is not None else None,
+                    var, overrides)
             for var in out_vars:
                 ov = fout.createVariable(var, "f4", ("time", "z", "y", "x"),
                                          fill_value=FILL, zlib=True,
                                          complevel=4)
                 ov.grid_mapping = gm
-                ov.coordinates = "time z y x"
+                # No `coordinates` attribute: it declares AUXILIARY
+                # coordinates in CF, and Esri accepts only netCDF with no
+                # auxiliary variables as a multidimensional/voxel source.
                 if var == "ta" and derive_ta:
                     ov.units = "degC" if celsius else "K"
                     ov.long_name = "air temperature"
@@ -277,8 +378,15 @@ def stage_voxel(cfg, grid):
                     for att in ("units", "long_name"):
                         if hasattr(src, att):
                             ov.setncattr(att, getattr(src, att))
-                if celsius and is_temperature(var):
-                    ov.units = "degC"
+                if var in scales:
+                    ov.units = "degC" if target == "C" else "K"
+                    ov.palm2gis_source_units = str(
+                        getattr(src, "units", "") if src is not None else "")
+                    ov.palm2gis_output_units = ov.units
+                elif is_celsius_exempt(var):
+                    # Potential temperature stays kelvin whatever `celsius`
+                    # says; it is a kelvin-defined quantity.
+                    ov.palm2gis_output_units = str(getattr(ov, "units", "K"))
 
             # terrain mask from the first mass-grid variable at first time
             mask_src = next((c for c in scalars + ["w"]
@@ -304,8 +412,9 @@ def stage_voxel(cfg, grid):
                         nc.variables[var][it, kz0:kzmax,
                                           grid.ny0:grid.nymax,
                                           grid.nx0:grid.nxmax], FILL)
-                    if celsius and is_temperature(var):
-                        val = kelvin_to_celsius(val, fill=FILL)
+                    if var in scales:
+                        val = convert_temperature(val, scales[var], target,
+                                                  fill=FILL)
                     val[terrain_mask] = FILL
                     fout.variables[var][q, ...] = val
                 if derive_ta:
@@ -314,8 +423,7 @@ def stage_voxel(cfg, grid):
                                               grid.ny0:grid.nymax,
                                               grid.nx0:grid.nxmax], FILL))
                     ta = np.ma.filled(theta_to_ta(th, pi), FILL)
-                    if celsius:
-                        ta = kelvin_to_celsius(ta, fill=FILL)
+                    ta = convert_temperature(ta, "K", target, fill=FILL)
                     ta[terrain_mask] = FILL
                     fout.variables["ta"][q, ...] = ta
 

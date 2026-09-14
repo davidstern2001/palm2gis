@@ -26,12 +26,13 @@ from netCDF4 import Dataset
 import rasterio
 from rasterio.transform import from_origin
 import geopandas as gpd
-from shapely.geometry import LineString, Polygon
+import pyogrio
+from shapely.geometry import LineString, MultiPolygon, Polygon
 
 from ..log import debug, get_logger, info, warning
 from .georef import check_product, check_raw_input, select_times
-from .thermo import exner_simple, is_temperature, kelvin_to_celsius, \
-    theta_to_ta
+from .thermo import convert_temperature, exner_simple, is_celsius_exempt, \
+    is_temperature, temperature_scale, theta_to_ta
 from .qgis_style import (embed_gpkg_style, raster_qml, vector_qml,
                          write_sidecar)
 
@@ -76,7 +77,7 @@ SURF_POTENTIAL = ("theta_surface", "theta_surf")
 def output_vars(sf, available=None, verbose=False):
     """(output name, source variable, derive?) for every surface product.
 
-    With surfaces.derive_ta the actual surface temperature `t_surf` is
+    With surfaces.derive_t_surf the actual SURFACE temperature `t_surf` is
     ENSURED: if the file already holds it, PALM's own value is used as-is;
     only when it is absent is it derived from the surface potential
     temperature. The same list drives the raster, the mesh NetCDF and the
@@ -103,7 +104,7 @@ def output_vars(sf, available=None, verbose=False):
         out.append((var, src, False))
         names.append(var)
 
-    if not sf["derive_ta"]:
+    if not sf["derive_t_surf"]:
         return out
 
     if SURF_ACTUAL in names:
@@ -119,7 +120,7 @@ def output_vars(sf, available=None, verbose=False):
     src = next((v for _n, v, _d in out if v in SURF_POTENTIAL), None)
     if src is None:
         if verbose:
-            warning("[surfaces] derive_ta is on but neither '{}' nor a "
+            warning("[surfaces] derive_t_surf is on but neither '{}' nor a "
                     "surface potential temperature ({}) is available.",
                     SURF_ACTUAL, ", ".join(SURF_POTENTIAL))
         return out
@@ -127,12 +128,23 @@ def output_vars(sf, available=None, verbose=False):
     return out
 
 
-def _derive_values(cfg, vals, z_elem, derive, name=None):
-    """theta -> T conversion (when *derive*) and the optional kelvin ->
-    Celsius output conversion for temperature variables (cfg["celsius"]).
+def _derive_values(cfg, vals, z_elem, derive, name=None, src_units=None):
+    """theta -> T conversion (when *derive*) and the output scale
+    conversion for temperature variables (cfg["celsius"]).
 
-    The Exner-based derivation runs in kelvin; Celsius is applied last,
-    only to valid entries - FILL sentinels and NaN stay untouched.
+    The Exner-based derivation runs in kelvin; the scale conversion is
+    applied last, only to valid entries - FILL sentinels and NaN stay
+    untouched.
+
+    `src_units` is the source variable's `units` attribute and decides
+    the INPUT scale. Assuming kelvin here was wrong for PALM's own
+    Celsius variables; see thermo.temperature_scale.
+
+    NOTE `z_elem` is height above the DOMAIN BASE, not above sea level.
+    exner_simple pairs it with cfg["surface_pressure"], defined as the
+    pressure at the model's z = 0. Passing absolute (origin_z-shifted)
+    heights here would put a second, larger error on every derived
+    temperature.
     """
     out = vals
     if derive:
@@ -143,9 +155,14 @@ def _derive_values(cfg, vals, z_elem, derive, name=None):
                               p_surface=cfg["surface_pressure"])
             out = np.array(vals, dtype="f8", copy=True)
             out[good] = theta_to_ta(vals[good], pi[good])
-    if cfg["celsius"] and name is not None and is_temperature(name):
-        out = kelvin_to_celsius(out, fill=FILL)
-    return out
+    if name is None or not is_temperature(name) or is_celsius_exempt(name):
+        return out
+    # A derived value came out of theta_to_ta, so it is kelvin whatever
+    # the source variable was labelled.
+    source = "K" if derive else temperature_scale(
+        src_units, name, dict(cfg["temperature_units"] or {}))
+    return convert_temperature(out, source, "C" if cfg["celsius"] else "K",
+                               fill=FILL)
 
 
 # ------------------------------
@@ -210,7 +227,7 @@ def _topview_netcdf(cfg, grid, nc, its, times, top_s, valid, zs,
                                      fill_value=FILL, zlib=True,
                                      complevel=4)
             ov.grid_mapping = gm
-            ov.coordinates = "time y x"
+            # See the note in voxel.py: no auxiliary coordinates.
             if derive:
                 ov.units = "degC" if cfg["celsius"] else "K"
                 ov.long_name = ("surface air temperature derived from {} "
@@ -221,14 +238,17 @@ def _topview_netcdf(cfg, grid, nc, its, times, top_s, valid, zs,
                     for att in ("units", "long_name"):
                         if hasattr(src, att):
                             ov.setncattr(att, getattr(src, att))
-                if cfg["celsius"] and is_temperature(name):
-                    ov.units = "degC"
+                if is_temperature(name) and not is_celsius_exempt(name):
+                    ov.units = "degC" if cfg["celsius"] else "K"
+            # RELATIVE height: this feeds the Exner function, which pairs
+            # it with surface_pressure at the model's z = 0. Not abs_z.
             z_top = zs[top_s[valid]]
             for b, it in enumerate(its):
                 data = np.ma.filled(nc.variables[var][it, :], FILL)
                 band = np.full((nj, ni), FILL, dtype=np.float32)
-                band[valid] = _derive_values(cfg, data[top_s[valid]],
-                                             z_top, derive, name=name)
+                band[valid] = _derive_values(
+                    cfg, data[top_s[valid]], z_top, derive, name=name,
+                    src_units=getattr(nc.variables[var], "units", None))
                 ov[b, ...] = band[j0:j1, i0:i1]
 
     info("[surfaces] wrote {}: {} vars x {} times (mesh layer)",
@@ -302,8 +322,9 @@ def _topview_raster(cfg, grid, nc, its, times, xs, ys, zs, zen, sel,
             for b, it in enumerate(its, start=1):
                 data = np.ma.filled(nc.variables[var][it, :], FILL)
                 band = np.full((nj, ni), FILL, dtype=np.float32)
-                band[valid] = _derive_values(cfg, data[top_s[valid]],
-                                             z_top, derive, name=name)
+                band[valid] = _derive_values(
+                    cfg, data[top_s[valid]], z_top, derive, name=name,
+                    src_units=getattr(nc.variables[var], "units", None))
                 band = band[j0:j1, i0:i1]
                 dst.write(band[::-1, :], b)          # north-up
                 dst.set_band_description(b, grid.label(dts[it], it))
@@ -349,6 +370,11 @@ def _element_quad(x, y, z, zen, az, grid):
     """
     ox, oy = grid.origin_x, grid.origin_y
     dx, dy, dz = grid.dx, grid.dy, grid.dz
+    # z is shifted to absolute here for the same reason x and y are: the
+    # quad is output geometry. PALM's zs is height above the domain base,
+    # so a quad built from it raw sat origin_z metres below the buildings
+    # it describes.
+    z = float(grid.abs_z(z))
     if abs(zen - 90.0) > 45.0:            # horizontal face (up or down)
         return Polygon([(ox + x - dx / 2.0, oy + y - dy / 2.0, z),
                         (ox + x + dx / 2.0, oy + y - dy / 2.0, z),
@@ -394,6 +420,173 @@ def _wall_trace(poly):
 def _wall_quad(x, y, z, az, grid):
     """Backwards-compatible helper: a wall element is zenith 90."""
     return _element_quad(x, y, z, 90.0, az, grid)
+
+
+# ------------------------------
+# 3b. MULTIPATCH / FILE GEODATABASE
+# ------------------------------
+# Shapefile field names are capped at 10 characters by DBF. Truncating
+# silently would collapse `theta_surface_derived` and `theta_surface_raw`
+# onto the same column, so the map is explicit and collisions are
+# reported rather than resolved by luck.
+_DBF_NAME_MAX = 10
+
+
+def _dbf_field_map(names):
+    """Map attribute names to DBF-legal (<=10 char) names, uniquely."""
+    out, taken = {}, set()
+    for n in names:
+        base = str(n)[:_DBF_NAME_MAX]
+        cand, k = base, 1
+        while cand in taken:
+            suffix = str(k)
+            cand = base[:_DBF_NAME_MAX - len(suffix)] + suffix
+            k += 1
+        if cand != n:
+            warning("[surfaces] shapefile field '{}' -> '{}' (DBF caps "
+                    "names at {} characters).", n, cand, _DBF_NAME_MAX)
+        out[n] = cand
+        taken.add(cand)
+    return out
+
+
+def _element_frames(cfg, grid, nc, its, times, xs, ys, zs, zen, az, idx,
+                    multipatch=False):
+    """Yield (timestep index, GeoDataFrame) for the selected elements.
+
+    Shared by the GeoPackage, multipatch and File Geodatabase writers so
+    the geometry and the attributes cannot drift apart between products.
+    With `multipatch` the quads are wrapped in MultiPolygon, which is
+    what GDAL's shapefile driver needs to emit shape type 31.
+    """
+    sf = cfg["surfaces"]
+    quads = [_element_quad(xs[s], ys[s], zs[s], zen[s], az[s], grid)
+             for s in idx]
+    geoms = [MultiPolygon([q]) for q in quads] if multipatch else quads
+    orient = [_orientation(zen[s], az[s]) for s in idx]
+
+    i = np.clip(np.round((xs[idx] - grid.dx / 2.0) / grid.dx).astype(int)
+                - grid.nx0, 0, grid.zt.shape[1] - 1)
+    j = np.clip(np.round((ys[idx] - grid.dy / 2.0) / grid.dy).astype(int)
+                - grid.ny0, 0, grid.zt.shape[0] - 1)
+    z_agl = zs[idx] - grid.zt[j, i]
+
+    dts_tz = grid.times_to_datetime(times, tz_aware=True)
+
+    for n, it in enumerate(its):
+        # int32 explicitly: OpenFileGDB has no 64-bit integer field, so
+        # an int64 index silently arrives back as a float.
+        rec = {"elem_id": idx.astype("i4"),
+               "orient": orient,
+               "zenith": zen[idx],
+               "z": grid.abs_z(zs[idx]),
+               "z_agl": z_agl,
+               "rec": np.full(idx.size, int(it), dtype="i4")}
+        if multipatch:
+            # DBF has no datetime type: GDAL downgrades one to a string
+            # with a warning. Writing the string deliberately means the
+            # format is chosen rather than inherited, and ArcGIS Pro can
+            # time-enable a text field on it.
+            stamp = dts_tz[it]
+            rec["time"] = [stamp.strftime("%Y-%m-%dT%H:%M:%S")
+                           if stamp is not None else ""] * idx.size
+            # `azimuth` is omitted on purpose: shapefiles have no numeric
+            # NULL, so the -9999 sentinel for horizontal faces could not
+            # be cleaned up. It is recoverable from `orient`.
+        else:
+            rec["time"] = [dts_tz[it]] * idx.size
+            rec["azimuth"] = np.where(np.isclose(az[idx], FILL), np.nan,
+                                      az[idx])
+        for name, var, derive in output_vars(sf, nc.variables):
+            vals = np.ma.filled(nc.variables[var][it, :], np.nan)[idx]
+            rec[name] = _derive_values(
+                cfg, vals, zs[idx], derive, name=name,
+                src_units=getattr(nc.variables[var], "units", None))
+        yield n, it, gpd.GeoDataFrame(rec, geometry=geoms, crs=grid.crs)
+
+
+def _elements_multipatch(cfg, grid, nc, its, times, xs, ys, zs, zen, az,
+                         idx, path):
+    """Write surface elements as an ESRI MultiPatch shapefile.
+
+    Multipatch (shape type 31) is ArcGIS's native 3D geometry type and
+    the one a 3D Object scene layer is published from. GDAL reaches it
+    only through the shapefile driver - OpenFileGDB writes MultiPolygon
+    Z, not multipatch - which brings the DBF limits handled above.
+    """
+    sf = cfg["surfaces"]
+    if idx.size == 0:
+        warning("[surfaces] no elements in bounds - {} skipped.",
+                cfg.disp(path))
+        return
+
+    split_at = int(sf["multipatch_split"] or 0)
+    # A .shp and its .dbf are each capped at 2 GB, so a long run has to
+    # be split. One file per timestep is the only split that keeps every
+    # feature's geometry intact.
+    per_time = bool(split_at) and idx.size * len(its) > split_at
+    if per_time:
+        info("[surfaces] {} elements x {} times exceeds "
+             "surfaces.multipatch_split ({}) - writing one shapefile per "
+             "timestep.", idx.size, len(its), split_at)
+
+    written, frames = [], []
+    for n, it, frame in _element_frames(cfg, grid, nc, its, times, xs, ys,
+                                        zs, zen, az, idx, multipatch=True):
+        if per_time:
+            stamp = frame["time"].iloc[0].replace(":", "").replace("-", "")
+            out = path.with_name("{}_{}{}".format(path.stem, stamp,
+                                                  path.suffix))
+            _write_multipatch(frame, out)
+            written.append(out)
+        else:
+            frames.append(frame)
+
+    if not per_time:
+        frame = (frames[0] if len(frames) == 1
+                 else gpd.pd.concat(frames, ignore_index=True))
+        _write_multipatch(frame, path)
+        written.append(path)
+
+    info("[surfaces] wrote {}: {} multipatch features x {} times{}",
+         cfg.disp(path), idx.size, len(its),
+         " in {} files".format(len(written)) if len(written) > 1 else "")
+
+
+def _write_multipatch(frame, path):
+    """One shapefile, geometry forced to MultiPatch, fields DBF-safe."""
+    if path.exists():
+        path.unlink()
+    cols = [c for c in frame.columns if c != "geometry"]
+    frame = frame.rename(columns=_dbf_field_map(cols))
+    pyogrio.write_dataframe(frame, path, driver="ESRI Shapefile",
+                            SHPT="MULTIPATCH")
+    # .prj comes from the frame's CRS; without it ArcGIS drops the layer
+    # at the origin, which is a miserable thing to debug.
+    if not path.with_suffix(".prj").exists():
+        warning("[surfaces] {} has no .prj - the CRS was not written.",
+                path.name)
+
+
+def _elements_fgdb(cfg, grid, nc, its, times, xs, ys, zs, zen, az, idx,
+                   path, layer):
+    """Write the same elements as PolygonZ into a File Geodatabase.
+
+    The GeoPackage keeps QGIS happy; this is the container ArcGIS opens
+    natively. Unlike the multipatch shapefile it preserves real
+    datetimes, full-length field names and NULLs, so nothing is lost
+    relative to the GeoPackage.
+    """
+    if idx.size == 0:
+        warning("[surfaces] no elements in bounds - {} skipped.",
+                cfg.disp(path))
+        return
+    for n, it, frame in _element_frames(cfg, grid, nc, its, times, xs, ys,
+                                        zs, zen, az, idx):
+        pyogrio.write_dataframe(frame, path, driver="OpenFileGDB",
+                                layer=layer, append=(n > 0))
+    info("[surfaces] wrote {}: feature class '{}', {} elements x {} times",
+         cfg.disp(path), layer, idx.size, len(its))
 
 
 def _elements_gpkg(cfg, grid, nc, its, times, xs, ys, zs, zen, az, sel,
@@ -462,15 +655,20 @@ def _elements_gpkg(cfg, grid, nc, its, times, xs, ys, zs, zen, az, sel,
         rec = {"elem_id": idx,
                "orient": orient,
                "zenith": zen[idx],
-               "azimuth": az[idx],
-               "z": zs[idx],
+               # NULL, not a sentinel: a magic -9999 in a numeric attribute
+               # has no NoData meaning to a GIS and skews every
+               # classification and statistic computed on the field.
+               "azimuth": np.where(np.isclose(az[idx], FILL), np.nan,
+                                   az[idx]),
+               "z": grid.abs_z(zs[idx]),
                "z_agl": z_agl,
                "rec": it,
                "time": [dts_tz[it]] * idx.size}
         for name, var, derive in output_vars(sf, nc.variables):
             vals = np.ma.filled(nc.variables[var][it, :], np.nan)[idx]
-            rec[name] = _derive_values(cfg, vals, zs[idx], derive,
-                                       name=name)
+            rec[name] = _derive_values(
+                cfg, vals, zs[idx], derive, name=name,
+                src_units=getattr(nc.variables[var], "units", None))
         frame = gpd.GeoDataFrame(rec, geometry=geoms, crs=grid.crs)
         frame.to_file(path, layer=layer, driver="GPKG",
                       mode="w" if n == 0 else "a")
@@ -574,7 +772,15 @@ def stage_surfaces(cfg, grid):
     all_path = cfg.out_path("{}surfaces.gpkg".format(sf["prefix"]))
     do_all = (sf["write_all_elements_gpkg"]
               and cfg.prepare_output(all_path, "surfaces"))
-    if not targets and not do_nc and not do_walls and not do_all:
+    mp_path = cfg.out_path(sf["multipatch_to"]
+                           or "{}surfaces.shp".format(sf["prefix"]))
+    do_mp = (sf["write_multipatch"]
+             and cfg.prepare_output(mp_path, "surfaces"))
+    fgdb_path = cfg.out_path(sf["fgdb_to"]
+                             or "{}surfaces.gdb".format(sf["prefix"]))
+    do_fgdb = (sf["write_fgdb"]
+               and cfg.prepare_output(fgdb_path, "surfaces"))
+    if not (targets or do_nc or do_walls or do_all or do_mp or do_fgdb):
         info("[surfaces] nothing to write, skipping.")
         return
 
@@ -598,6 +804,19 @@ def stage_surfaces(cfg, grid):
         if do_all:
             _all_elements_gpkg(cfg, grid, nc, its, times, xs, ys, zs, zen,
                                az, sel, all_path)
+        if do_mp or do_fgdb:
+            idx_all = np.where(sel)[0]
+            if do_mp:
+                _elements_multipatch(cfg, grid, nc, its, times, xs, ys, zs,
+                                     zen, az, idx_all, mp_path)
+            if do_fgdb:
+                _elements_fgdb(cfg, grid, nc, its, times, xs, ys, zs, zen,
+                               az, idx_all, fgdb_path, "surfaces")
+                wall_idx = np.where(
+                    sel & (np.abs(zen - 90.0) < 1.0e-3))[0]
+                if wall_idx.size:
+                    _elements_fgdb(cfg, grid, nc, its, times, xs, ys, zs,
+                                   zen, az, wall_idx, fgdb_path, "walls")
 
 
 # ------------------------------

@@ -49,6 +49,11 @@ DEFAULTS = {
         # Override the static driver's origin_time attribute,
         # format "YYYY-MM-DD HH:MM:SS" (any UTC-offset suffix is ignored).
         "origin_time": None,
+        # Override the static driver's origin_z attribute [m above sea
+        # level]. PALM's z = 0 sits at origin_z, so this is what turns
+        # relative heights into absolute ones. Static drivers often carry
+        # 0 because nobody set it; the run warns when that happens.
+        "origin_z": None,
     },
     "bounds": {
         # Subdomain cut in metres, LOCAL PALM coordinates. Unset = no cut.
@@ -129,10 +134,31 @@ DEFAULTS = {
         "write_topview_netcdf": True,
         # Wall elements -> vertical PolygonZ quads in a GeoPackage,
         # long format with a `time` field (ArcGIS time slider ready).
+        # ESRI MultiPatch shapefile: ArcGIS's native 3D geometry type,
+        # and what a 3D Object scene layer is published from. One file,
+        # all element orientations (use `orient` to filter), all
+        # timesteps. DBF limits apply - see the notes in surfaces.py.
+        "multipatch_to": None,
+        "write_multipatch": True,
+        # Split into one shapefile per timestep once elements x times
+        # exceeds this. A .shp and its .dbf are each capped at 2 GB.
+        "multipatch_split": 2_000_000,
+        # File Geodatabase holding the same elements as PolygonZ. The
+        # GeoPackage is for QGIS; this is what ArcGIS opens natively,
+        # and unlike the shapefile it keeps real datetimes, full-length
+        # field names and NULLs.
+        "fgdb_to": None,
+        "write_fgdb": True,
         "write_walls_gpkg": True,
-        # Add a ta_* column next to every theta_* variable on the element
-        # layers: actual temperature at each face's own height.
-        "derive_ta": False,
+        # Add `t_surf` - the actual SURFACE (skin) temperature - next to
+        # every surface potential temperature, converted at each face's
+        # own height. If PALM already writes t_surf its own value is used.
+        #
+        # NOT to be confused with voxel.derive_ta: `ta` is PALM's TRUE AIR
+        # temperature, an atmospheric quantity, and nothing in this stage
+        # produces one. This option was called `derive_ta` up to 0.17.0,
+        # which was wrong twice over; the old name still works and warns.
+        "derive_t_surf": False,
         # Vertical faces have a ZERO-AREA footprint, so the polygon layers
         # show nothing in a 2D map view. This adds a companion "<layer>_2d"
         # layer inside the same GeoPackage holding each wall's horizontal
@@ -156,6 +182,14 @@ DEFAULTS = {
         "heights_agl": [2.0],      # sampling heights above the LOCAL
                                    # surface (terrain + buildings) [m]
         "stride": 1,               # keep every n-th grid column
+        # Gridded NetCDF for ArcGIS Pro's flow / vector-field renderers:
+        # (time, height, y, x) with u, v, w, speed and dir_met. Written
+        # alongside the GeoPackage, not instead of it.
+        "grid_to": None,           # output .nc (relative -> output_dir)
+        # Thinning for grid_to only. Default 1 (full resolution): the
+        # renderer thins its own streamlines, and a 200x200x7x2 grid of
+        # five float32 variables is about 11 MB.
+        "grid_stride": 1,
         # A second layer, `wind_3d`, of LineStringZ arrows at the TRUE
         # sample height (local surface + height_agl). The point layer holds
         # 2D geometry with the height only as an attribute, so in a 3D
@@ -195,6 +229,14 @@ DEFAULTS = {
     # in the NetCDF outputs is set to "degC" accordingly. Inputs must stay
     # raw kelvin either way (see the raw-input guard).
     "celsius": False,
+    # Explicit temperature scale for variables whose `units` attribute
+    # cannot be read. Maps a variable name to "K" or "C", e.g.
+    # {ta_2m*_xy: C}. Needed rarely: PALM's own unit strings are
+    # recognised, including the truncated "degree_" it writes from a
+    # fixed-length buffer. A stage RAISES on an unrecognised unit rather
+    # than guessing, so this is the escape hatch when a new PALM version
+    # writes something new.
+    "temperature_units": {},
     # Pressure at the model's z = 0 level (the domain base, i.e. at
     # origin_z - NOT sea level), used for the Exner function when deriving
     # air temperature. Left null (the default) it is read from the p3d:
@@ -229,6 +271,41 @@ DEFAULTS = {
 # ------------------------------
 # 3. HELPERS
 # ------------------------------
+# Keys renamed since a released version: {section: {old: new}}. Honoured
+# on load with a warning, so an existing job config keeps working.
+_RENAMED_KEYS = {
+    "surfaces": {"derive_ta": "derive_t_surf"},
+}
+
+
+def _migrate_renamed_keys(user):
+    """Accept pre-0.18 key names, warning once per key.
+
+    surfaces.derive_ta derived `t_surf`, a SURFACE skin temperature -
+    while `ta` in PALM is the true AIR temperature. The name claimed the
+    wrong quantity and the wrong medium, and sat next to voxel.derive_ta,
+    which does genuinely derive air temperature.
+    """
+    for section, renames in _RENAMED_KEYS.items():
+        block = user.get(section)
+        if not isinstance(block, dict):
+            continue
+        for old, new in renames.items():
+            if old not in block:
+                continue
+            if new in block:
+                warning("config: {}.{} is deprecated and {}.{} is also "
+                        "set - using {}.{}.",
+                        section, old, section, new, section, new)
+            else:
+                warning("config: {}.{} has been renamed to {}.{}. It "
+                        "derives t_surf, a SURFACE temperature; `ta` is "
+                        "PALM's true AIR temperature. The old name still "
+                        "works for now.", section, old, section, new)
+                block[new] = block[old]
+            block.pop(old)
+
+
 def _deep_merge(base, override):
     out = copy.deepcopy(base)
     for k, v in (override or {}).items():
@@ -292,6 +369,7 @@ class Config:
         user = yaml.safe_load(text) or {}
         _check_unquoted_clock(text)
 
+        _migrate_renamed_keys(user)
         self._cfg = _deep_merge(DEFAULTS, user)
         root = self._cfg["project"]["root"]
         self.root = Path(root).resolve() if root else self._path.parent
@@ -407,7 +485,13 @@ class Config:
             if stale and not self.overwrite:
                 info("{}config changed since it was written - rewriting {}",
                      label, self.disp(path))
-            path.unlink()
+            # A File Geodatabase is a DIRECTORY, not a file, so unlink
+            # raises on it. Everything else here is a plain file.
+            if path.is_dir():
+                import shutil
+                shutil.rmtree(path, ignore_errors=True)
+            else:
+                path.unlink()
             debug("{}replacing {}", label, self.disp(path))
         path.parent.mkdir(parents=True, exist_ok=True)
         # Remember that this run is (re)writing the file. Only these get

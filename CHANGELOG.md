@@ -1,5 +1,114 @@
 # Changelog
 
+## 0.18.1
+
+**Fixed: the wind grid crashed under a subdomain cut**
+
+`_wind_netcdf` sliced `grid.x_stat` / `grid.y_stat` by `[nx0:nxmax]`, but
+those arrays are ALREADY the cut subdomain. With `bounds.x0: 100,
+xmax: 300` a 200-element array became 100 and was then indexed to 199:
+`index 100 is out of bounds for axis 0 with size 100`. Introduced in
+0.17.0 with the gridded wind output.
+
+The self-test fixture had no horizontal cut, so `nx0 = 0` and
+`nxmax = NX` made every coordinate-slicing mistake a no-op. It now runs
+the wind stage under a cut and cross-checks the grid's geolocation
+against the independently computed point layer.
+
+## 0.18.0
+
+**`surfaces.derive_ta` renamed to `surfaces.derive_t_surf`**
+
+The old name claimed the wrong quantity and the wrong medium. It derives
+`t_surf`, a SURFACE skin temperature, from the surface potential
+temperature — while `ta` in PALM is the *true air temperature*, an
+atmospheric field. Worse, it sat next to `voxel.derive_ta`, which does
+genuinely derive air temperature, so the same key name meant two different
+things in two stages.
+
+`voxel.derive_ta` is unchanged and correct. The old `surfaces.derive_ta`
+still loads and warns, so existing job configs keep working.
+
+## 0.17.0
+
+**Two wrong numbers, both of which looked right**
+
+- **Temperature scale is read from `units`, not guessed from the variable
+  name.** PALM writes `ta` and `ta_2m*` in degrees Celsius while `theta`,
+  `tsurf*` and `t_surf*` are kelvin. Subtracting 273.15 by name produced a
+  voxel layer reading -253 degC. `celsius` now selects the OUTPUT scale and
+  conversion runs only when source and target differ, so an already-Celsius
+  variable is left alone. PALM's truncated `"degree_"` is recognised. An
+  unrecognised unit **raises** rather than being guessed — `temperature_units`
+  is the override.
+- **`theta` is exempt from `celsius`.** Potential temperature is a
+  kelvin-defined quantity; it no longer gets relabelled `degC`.
+- **Every output z is now height above sea level.** `origin_z` was read and
+  never used, so voxels, LAD, surface quads and wind arrows sat `origin_z`
+  metres too low while x and y were already absolute — 175 m for the
+  Holesovice domain. **This moves every existing 3D layer vertically**; saved
+  ArcGIS Pro projects will see things jump. `domain.origin_z` overrides the
+  static driver, and a run whose `origin_z` is 0 now warns.
+  The Exner profile keeps a separate RELATIVE z: `surface_pressure` is
+  defined at the model's z = 0, so absolute heights there would have traded
+  a geometry error for a temperature one.
+
+**New products**
+
+- **`<prefix>surfaces.shp`** — ESRI MultiPatch (shape type 31), ArcGIS's
+  native 3D geometry type. One file, all orientations, `orient` as the
+  discriminator. DBF caps field names at 10 characters (reported, never
+  truncated silently) and has no datetime, so `time` is a deliberate ISO
+  string; `azimuth` is omitted because shapefiles have no numeric NULL.
+  `surfaces.multipatch_split` splits into one file per timestep past 2 GB.
+- **`<prefix>surfaces.gdb`** — File Geodatabase with `surfaces` and `walls`
+  feature classes as PolygonZ. Keeps real datetimes, full-length field names
+  and NULLs; nothing is lost relative to the GeoPackage.
+- **`<wind.grid_to>.nc`** — gridded `(time, height, y, x)` with `u`, `v`,
+  `w`, `speed` and `dir_met` for ArcGIS Pro's flow / vector-field renderers.
+  Both renderer pairings are written so neither needs a regenerated file.
+  `height` is terrain-following AGL and deliberately carries no CF
+  `standard_name`, which would assert an elevation it does not have.
+  `wind.grid_stride` is independent of `wind.stride`.
+
+**ArcGIS conformance**
+
+- No CF `coordinates` attribute on the netCDF outputs. It declares auxiliary
+  coordinates, and Esri accepts only netCDF with no auxiliary variables as a
+  voxel source.
+- The voxel stage checks that z is regularly spaced and names `drop_k0` /
+  `bounds.z0` when it is not — an ArcGIS voxel layer requires it.
+- `write_crs_var` warns when `to_cf()` yields no `grid_mapping_name` (Krovak
+  / S-JTSK, which pyproj cannot express in CF) and when the datum is not
+  WGS 84, since Esri assumes WGS 1984 for netCDF regardless.
+- `azimuth` is NULL rather than -9999 in the GeoPackage and geodatabase.
+
+**Reading palm_postproc output**
+
+- The raw-input guard no longer treats "temperature in degC" as proof of
+  `coord` output for `ta*` — PALM writes those in Celsius natively, so the
+  old rule was one variable away from rejecting valid raw files. Only
+  kelvin-defined variables testify now, and the unit lists come from
+  `thermo.py` instead of a second copy that lacked `degree_c`.
+- A file stamped `palm_postproc_stage = "join"` satisfies the guard outright.
+- `bounds.zmax` resolves against the FILE's own z axis rather than `nz`/`dz`.
+  The same config previously gave 19 m from `OUTPUT_splitvar` and 11 m from
+  `OUTPUT_splitz`, silently. Pre-cut files now say so.
+- Missing variables produce a readable error naming what the file holds and
+  why a splitvar file cannot satisfy a multi-variable stage, instead of a
+  bare `KeyError: 'u'`. Mismatched `zu_3d`/`zw_3d` lengths are caught before
+  numpy raises a boolean-index error.
+
+**Fixed**
+
+- `test.py` died with an `IndexError` in the canopy verification, so the
+  self-test could not certify an environment. It reduced the LAD volume over
+  the wrong axes, assuming a 3D array where the variable is 4D.
+- `prepare_output` raised `Is a directory` on a File Geodatabase.
+- The test fixture used `origin_z = 0`, which is precisely why the vertical
+  misalignment never failed a test. It is now 175 m, and the suite covers
+  the units, height, multipatch, geodatabase and wind-grid regressions.
+
 ## 0.16.0
 
 **Wind in 3D**

@@ -20,20 +20,164 @@ import geopandas as gpd
 from shapely.geometry import LineString, Point
 
 from ..log import debug, get_logger, info, warning
-from .georef import check_product, check_raw_input, select_times
-from .voxel import destagger
+from .georef import (check_product, check_raw_input, require_variables,
+                     select_times)
+from .voxel import FILL, destagger, write_crs_var
 from .qgis_style import (embed_gpkg_style, vector_qml, write_sidecar)
 
 log = get_logger()
 
 
 # ------------------------------
-# 1. STAGE ENTRY
+# 1. GRIDDED NETCDF (ARCGIS FLOW RENDERER)
+# ------------------------------
+def _wind_netcdf(cfg, grid, nc, its, times, heights, z, path):
+    """Regular (time, height, y, x) grid of u, v, w, speed and dir_met.
+
+    This is the product ArcGIS Pro's flow / vector-field renderers want:
+    Add Multidimensional Raster Layer, tick two variables, and choose
+    Output Configuration "Vector Field (U-V)" or "(Magnitude-Direction)".
+    Both pairings are written so neither requires regenerating the file.
+
+    `height` is the sampling level ABOVE THE LOCAL SURFACE, terrain and
+    rooftops included - the same terrain-following sampling the point
+    layer uses, and what pedestrian-comfort work needs. It is therefore
+    NOT an elevation, and deliberately carries no `standard_name`:
+    claiming CF's `height` would assert a single elevation per level,
+    which terrain-following sampling does not have.
+
+    No `coordinates` attribute is written. That attribute declares
+    AUXILIARY coordinates in CF, and Esri accepts only netCDF with no
+    auxiliary variables as a multidimensional source.
+    """
+    wd = cfg["wind"]
+    stride = max(1, int(wd["grid_stride"]))
+    nz = z.size
+
+    # Own column selection: `wind.stride` thins the GeoPackage point
+    # layer, `wind.grid_stride` thins this raster, and the two have no
+    # reason to agree.
+    jj_g = np.arange(0, grid.nymax - grid.ny0, stride)
+    ii_g = np.arange(0, grid.nxmax - grid.nx0, stride)
+    jg, ig = np.meshgrid(jj_g, ii_g, indexing="ij")
+
+    # grid.x_stat / y_stat are ALREADY the cut subdomain (x[nx0:nxmax]),
+    # so they are indexed with cut-relative indices directly. Slicing
+    # them by [nx0:nxmax] a second time shortens the array and then
+    # indexes off the end of it.
+    x_abs = grid.abs_x(np.asarray(grid.x_stat))[ii_g]
+    y_abs = grid.abs_y(np.asarray(grid.y_stat))[jj_g]
+
+    # k index of the first level at or above the local surface + h
+    k_of = {}
+    for h in heights:
+        k = np.searchsorted(z, grid.elev[jg, ig] + float(h))
+        k_of[h] = np.clip(k, 0, nz - 1)
+
+    with Dataset(path, "w", format="NETCDF4") as fout:
+        fout.Conventions = "CF-1.8"
+        fout.title = "PALM wind field sampled at fixed heights above ground"
+        fout.createDimension("time", len(its))
+        fout.createDimension("height", len(heights))
+        fout.createDimension("y", y_abs.size)
+        fout.createDimension("x", x_abs.size)
+
+        gm = write_crs_var(fout, grid.crs)
+
+        xv = fout.createVariable("x", "f8", ("x",))
+        xv[:] = x_abs
+        xv.standard_name = "projection_x_coordinate"
+        xv.units = "m"
+        xv.axis = "X"
+
+        # y stays ASCENDING. The GeoTIFF writer flips rows because GeoTIFF
+        # is a north-up raster format; netCDF is not, and flipping here
+        # would mirror the field.
+        yv = fout.createVariable("y", "f8", ("y",))
+        yv[:] = y_abs
+        yv.standard_name = "projection_y_coordinate"
+        yv.units = "m"
+        yv.axis = "Y"
+
+        hv = fout.createVariable("height", "f8", ("height",))
+        hv[:] = np.asarray(heights, dtype="f8")
+        hv.long_name = "height above local surface (terrain and buildings)"
+        hv.units = "m"
+        hv.axis = "Z"
+        hv.positive = "up"
+
+        tv = fout.createVariable("time", "f8", ("time",))
+        tv.units = "seconds since {}".format(
+            grid.origin_time.strftime("%Y-%m-%d %H:%M:%S"))
+        tv.calendar = "standard"
+        tv.axis = "T"
+        tv[:] = [float(times[it]) for it in its]
+
+        specs = (
+            ("u", "eastward_wind", "m s-1",
+             "eastward wind component"),
+            ("v", "northward_wind", "m s-1",
+             "northward wind component"),
+            ("w", "upward_air_velocity", "m s-1",
+             "vertical wind component"),
+            ("speed", "wind_speed", "m s-1",
+             "horizontal wind speed"),
+            ("dir_met", "wind_from_direction", "degree",
+             "meteorological wind direction (0 = from N, clockwise)"),
+        )
+        for name, std, units, long_name in specs:
+            ov = fout.createVariable(name, "f4",
+                                     ("time", "height", "y", "x"),
+                                     fill_value=FILL, zlib=True, complevel=4)
+            ov.grid_mapping = gm
+            ov.standard_name = std
+            ov.units = units
+            ov.long_name = long_name
+        fout.variables["dir_met"].comment = (
+            "Meteorological convention: the direction the wind blows FROM, "
+            "measured clockwise from north. In ArcGIS Pro's vector field "
+            "renderer set Reference System = Geographic and Angle "
+            "Representation = From. Horizontal only, ignoring w, so it "
+            "stays comparable with the point layer.")
+
+        for q, it in enumerate(its):
+            u3 = destagger(nc, "u", it, 0, nz, grid.ny0, grid.nymax,
+                           grid.nx0, grid.nxmax)
+            v3 = destagger(nc, "v", it, 0, nz, grid.ny0, grid.nymax,
+                           grid.nx0, grid.nxmax)
+            w3 = destagger(nc, "w", it, 0, nz, grid.ny0, grid.nymax,
+                           grid.nx0, grid.nxmax)
+            for hidx, h in enumerate(heights):
+                k = k_of[h]
+                u = u3[k, jg, ig]
+                v = v3[k, jg, ig]
+                w = w3[k, jg, ig]
+                sp = np.hypot(u, v)
+                dr = (270.0 - np.degrees(np.arctan2(v, u))) % 360.0
+                for name, val in (("u", u), ("v", v), ("w", w),
+                                  ("speed", sp), ("dir_met", dr)):
+                    arr = np.array(val, dtype="f4")
+                    arr[~np.isfinite(arr)] = FILL
+                    fout.variables[name][q, hidx, ...] = arr
+
+    info("[wind] wrote {}: {} x {} x {} x {} (t,height,y,x), "
+         "u, v, w, speed, dir_met", cfg.disp(path), len(its),
+         len(heights), y_abs.size, x_abs.size)
+    debug("[wind] ArcGIS Pro: Add Multidimensional Raster Layer, tick two "
+          "variables, Output Configuration = Vector Field (U-V) or "
+          "(Magnitude-Direction).")
+
+
+# ------------------------------
+# 2. STAGE ENTRY
 # ------------------------------
 def stage_wind(cfg, grid):
     wd = cfg["wind"]
-    file_to = cfg.out_path(wd["file_to"])
-    if not cfg.prepare_output(file_to, "wind"):
+    file_to = cfg.out_path(wd["file_to"]) if wd["file_to"] else None
+    grid_to = cfg.out_path(wd["grid_to"]) if wd["grid_to"] else None
+    want_gpkg = file_to is not None and cfg.prepare_output(file_to, "wind")
+    want_grid = grid_to is not None and cfg.prepare_output(grid_to, "wind")
+    if not (want_gpkg or want_grid):
         return
 
     with Dataset(cfg.resolve(wd["file_from"]), "r") as nc:
@@ -41,6 +185,11 @@ def stage_wind(cfg, grid):
         check_raw_input(nc, grid, "wind", wd["file_from"])
         its, times = select_times(cfg, nc, "wind", grid, cfg["wind"]["file_from"])
 
+        require_variables(
+            nc, ["u", "v"], "wind", wd["file_from"],
+            hint="wind needs u and v together, which among the splitvar "
+                 "outputs only the grouped u/v/w file has "
+                 "(steps.splitvar.group_vars).")
         z = np.asarray(nc.variables["zu_3d"][:])
         nz = z.size
         stride = int(wd["stride"])
@@ -53,6 +202,11 @@ def stage_wind(cfg, grid):
         jf, if_ = jg.ravel(), ig.ravel()
         debug("[wind] {} columns (stride {}), heights AGL: {} m",
               len(jf), stride, ", ".join(str(h) for h in heights))
+
+        if want_grid:
+            _wind_netcdf(cfg, grid, nc, its, times, heights, z, grid_to)
+        if not want_gpkg:
+            return
 
         lines_3d = bool(wd["write_lines_3d"])
         include_w = bool(wd["include_w"])
@@ -68,7 +222,10 @@ def stage_wind(cfg, grid):
             # point layer carried this only as the `height_agl` attribute,
             # so every level collapsed onto the ground in a 3D scene and
             # the 2 m and 10 m samples sat exactly on top of each other.
-            z_abs[h] = grid.elev[jf, if_] + h
+            # grid.elev is terrain + buildings ABOVE THE DOMAIN BASE, so
+            # the sample height needs origin_z to become a real elevation.
+            # Without it the 3D arrows sat origin_z metres underground.
+            z_abs[h] = grid.abs_z(grid.elev[jf, if_] + h)
 
         x_abs = grid.abs_x(grid.x_stat)
         y_abs = grid.abs_y(grid.y_stat)

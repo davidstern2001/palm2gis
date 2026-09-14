@@ -114,6 +114,10 @@ voxel:
 ################################# SURFACES ##################################
 # Surface elements -> top-view rasters + wall polygons.
 
+# `surfaces` writes several products. For ArcGIS the two that matter are
+# the MultiPatch shapefile (native 3D geometry) and the File Geodatabase
+# (PolygonZ, keeps datetimes and long field names); the GeoPackage is for
+# QGIS. All are on by default.
 surfaces:
     #enabled: false
     file_from: 'OUTPUT/SURFACE_DATA_NETCDF_N02'
@@ -137,10 +141,13 @@ surfaces:
     #write_all_elements_gpkg: false
     #layer_name: ~ #default: derived from the output file name
     # Ensure `t_surf`, the surface SKIN temperature, from theta_surface
-    # (which is a POTENTIAL temperature). Despite the key name this
-    # does not produce `ta` - that is air temperature, from the voxel
-    # stage.
-    #derive_ta: false
+    # (which is a POTENTIAL temperature). If PALM already writes t_surf,
+    # its own value is used.
+    #
+    # Called `derive_ta` up to 0.17.0. That was wrong twice over: `ta` is
+    # PALM's TRUE AIR temperature, an atmospheric quantity, and this
+    # stage produces no such thing. The old name still loads and warns.
+    #derive_t_surf: false
 
 ################################### WIND ####################################
 # Wind vectors sampled above the LOCAL surface, so the levels follow streets
@@ -153,6 +160,14 @@ wind:
     file_to: 'project_wind.gpkg' #relative -> project.output_dir
     #heights_agl: [2.0] #metres above the local surface
     #stride: 1 #sample every nth grid point in x and y
+
+    # Gridded NetCDF for ArcGIS Pro's flow / vector-field renderers:
+    # (time, height, y, x) holding u, v, w, speed and dir_met, so either
+    # renderer pairing works without regenerating the file. `height` is
+    # the terrain-following AGL sampling level, not an elevation.
+    # Written alongside the GeoPackage, not instead of it.
+    grid_to: 'project_wind.nc' #relative -> project.output_dir
+    #grid_stride: 1 #independent of `stride` above; 1 = full resolution
 
     # A second layer, `wind_3d`, of 3D arrows at the true sample height.
     # The point layer is 2D (height is an attribute only), so in a 3D
