@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.21.0
+
+**Absolute humidity in the voxel output**
+
+`ah` in `voxel.variables` (legacy layout: `voxel.derive_ah: true`) adds the
+water vapour density in g/m3. PALM's own `ah` is copied if the file has
+one; otherwise it is derived from `q` as `q * p / (Rd * Tv)`, with
+`Tv = T (1 + 0.608 q)`, `T` from PALM's `ta` when present or from theta,
+and `p` from the hydrostatic Exner profile used for `ta`. `q` is read in
+kg/kg, or g/kg when its `units` say so, and a value above 0.05 kg/kg
+warns. A file without `q` stops the stage before anything is written.
+
 ## 0.20.0
 
 **New config layout, written for newcomers**

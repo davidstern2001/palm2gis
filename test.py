@@ -161,6 +161,16 @@ def build_dataset(root):
         mk("w", ("time", "zw_3d", "y", "x"), 0.1)
         mk("theta", ("time", "zu_3d", "y", "x"), 300.0, units="K")
 
+        # q in kg/kg: its own values, since mk's +0.1 per record and 0.05
+        # noise would give negative or impossible humidities
+        qv = nc.createVariable("q", "f4", ("time", "zu_3d", "y", "x"),
+                               fill_value=-9999.0)
+        qv.units = "kg/kg"
+        for t in range(NT):
+            shp = (NZ, NY, NX)
+            data = 0.008 + 0.0005 * t + 0.0002 * rng.standard_normal(shp)
+            qv[t] = np.ma.masked_where(kmask[:NZ, :NY, :NX], data)
+
     # -- surface output (unstructured: tops + two building faces) ----------
     xs, ys, zs, zen, az = [], [], [], [], []
     for j in range(NY):
@@ -902,6 +912,77 @@ advanced:
     with Dataset(tmp / "out_only" / "test_wind.nc") as nc:
         check(nc["u"].dimensions == ("time", "height", "y", "x"),
               "layout: NetCDF-only wind grid is complete", failures)
+
+    # -- absolute humidity ---------------------------------------------------
+    from palm2gis.steps.thermo import KAPPA, P0, RD, humidity_scale
+    ah_cfg = tmp / "config_ah.yaml"
+    ah_cfg.write_text(new.read_text().replace("./out_new", "./out_ah")
+                      .replace("[u, v, w, theta, ta]", "[theta, ta, ah]"))
+    rc = pipeline_main(["-c", str(ah_cfg), "--stages", "voxel"])
+    import numpy as _np
+    with Dataset(tmp / "out_ah" / "test_voxel.nc") as nc, \
+            Dataset(tmp / "test_3d") as src:
+        nc.set_auto_mask(False)
+        ah = nc["ah"][0].astype("f8")
+        ta = nc["ta"][0].astype("f8")
+        th = nc["theta"][0].astype("f8")
+        # drop_k0: output level k is source level k + 1
+        qs = _np.ma.filled(src["q"][0, 1:, :, :], _np.nan).astype("f8")
+        ok = (ah != -9999.0) & _np.isfinite(qs)
+        # independent of palm2gis' pressure: ta / theta IS the Exner
+        # function, so p = P0 * (ta / theta) ** (1 / kappa)
+        p = P0 * (ta / th) ** (1.0 / KAPPA)
+        want = 1.0e3 * qs * p / (RD * ta * (1.0 + 0.608 * qs))
+        err = float(_np.max(_np.abs(ah[ok] - want[ok]) / want[ok]))
+        check(rc == 0 and ok.sum() > 0 and err < 1.0e-4
+              and 8.0 < float(_np.median(ah[ok])) < 11.0
+              and nc["ah"].units == "g m-3"
+              and nc["ah"].derived_from == "q",
+              f"voxel: ah = q p / (Rd Tv), median "
+              f"{float(_np.median(ah[ok])):.2f} g/m3, max rel. error "
+              f"{err:.1e}", failures)
+        check(bool((ah[~ok] == -9999.0).all()),
+              "voxel: ah is NoData inside terrain", failures)
+    check(humidity_scale("g/kg") == 1.0e-3 and humidity_scale("kg/kg") == 1.0
+          and humidity_scale(None) == 1.0,
+          "voxel: q units kg/kg and g/kg recognised", failures)
+
+    # with PALM's own ta (degC, truncated "degree_") as the temperature
+    via_ta = tmp / "config_ah_ta.yaml"
+    via_ta.write_text(ah_cfg.read_text().replace("./out_ah", "./out_ah_ta")
+                      .replace("data_3d: test_3d", "data_3d: test_3d_ta")
+                      .replace("[theta, ta, ah]", "[ah]"))
+    rc = pipeline_main(["-c", str(via_ta), "--stages", "voxel"])
+    with Dataset(tmp / "out_ah_ta" / "test_voxel.nc") as nc:
+        nc.set_auto_mask(False)
+        a2 = nc["ah"][0].astype("f8")
+        t_k = 21.5 + 273.15
+        want2 = 1.0e3 * qs * p / (RD * t_k * (1.0 + 0.608 * qs))
+        ok2 = (a2 != -9999.0) & _np.isfinite(qs)
+        err2 = float(_np.max(_np.abs(a2[ok2] - want2[ok2]) / want2[ok2]))
+        check(rc == 0 and ok2.sum() > 0 and err2 < 1.0e-4
+              and "PALM's ta" in nc["ah"].comment,
+              f"voxel: ah uses PALM's own Celsius ta when present "
+              f"(max rel. error {err2:.1e})", failures)
+
+    # PALM's own ah wins over deriving it
+    import shutil as _sh
+    _sh.copy(tmp / "test_3d", tmp / "test_3d_ah")
+    with Dataset(tmp / "test_3d_ah", "a") as nc:
+        v = nc.createVariable("ah", "f4", ("time", "zu_3d", "y", "x"),
+                              fill_value=-9999.0)
+        v.units = "g m-3"
+        v[:] = 12.0
+    own = tmp / "config_ah_own.yaml"
+    own.write_text(ah_cfg.read_text().replace("./out_ah", "./out_ah_own")
+                   .replace("data_3d: test_3d", "data_3d: test_3d_ah")
+                   .replace("[theta, ta, ah]", "[ah]"))
+    rc = pipeline_main(["-c", str(own), "--stages", "voxel"])
+    with Dataset(tmp / "out_ah_own" / "test_voxel.nc") as nc:
+        a = nc["ah"][0]
+        check(rc == 0 and _np.allclose(a.compressed(), 12.0)
+              and "derived_from" not in nc["ah"].ncattrs(),
+              "voxel: PALM's own ah is copied, not derived", failures)
 
     def rejects(text, expect, msg):
         bad = tmp / "config_bad.yaml"

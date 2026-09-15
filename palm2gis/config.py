@@ -118,6 +118,12 @@ DEFAULTS = {
         # already writes `ta`, it is copied - the model's own value is
         # exact.
         "derive_ta": False,
+        # Ensure `ah` - absolute humidity (water vapour density, g/m3).
+        # PALM's own `ah` is copied if the file has one; otherwise it is
+        # derived from `q` as q * p / (Rd * Tv), with T from PALM's `ta`
+        # (or from theta, as for derive_ta) and p from the hydrostatic
+        # Exner profile. Requires q.
+        "derive_ah": False,
     },
     "surfaces": {
         "enabled": False,
@@ -596,10 +602,10 @@ class Config:
                     raise ConfigError(f"voxel.{key} is required when "
                                       "voxel.enabled: true.")
             if not (c["voxel"]["do_velocity"] or c["voxel"]["scalars"]
-                    or c["voxel"]["derive_ta"]):
+                    or c["voxel"]["derive_ta"] or c["voxel"]["derive_ah"]):
                 raise ConfigError("voxel: nothing to write - enable "
-                                  "do_velocity or derive_ta, or list "
-                                  "scalars.")
+                                  "do_velocity, derive_ta or derive_ah, "
+                                  "or list scalars.")
         if c["surfaces"]["enabled"]:
             if not c["surfaces"]["file_from"]:
                 raise ConfigError("surfaces.file_from is required when "

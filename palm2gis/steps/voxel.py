@@ -25,8 +25,9 @@ from netCDF4 import Dataset
 from ..log import debug, get_logger, info, warning
 from .georef import (check_product, check_raw_input, require_variables,
                      resolve_z_range, select_times)
-from .thermo import LAPSE_DRY, convert_temperature, exner_profile, \
-    fill_profile_gaps, is_celsius_exempt, is_temperature, \
+from .thermo import LAPSE_DRY, absolute_humidity, convert_temperature, \
+    exner_profile, exner_simple, fill_profile_gaps, humidity_scale, \
+    is_celsius_exempt, is_temperature, pressure_from_exner, \
     temperature_scale, theta_to_ta
 
 log = get_logger()
@@ -195,6 +196,32 @@ def stage_voxel(cfg, grid):
             else:
                 warning("[voxel] derive_ta is on but the file holds neither "
                         "'ta' nor 'theta'.")
+        # Absolute humidity, ensured the same way: PALM's own `ah` if the
+        # file has one, otherwise derived from `q`. Its temperature comes
+        # from PALM's `ta` when present (exact) and from theta otherwise.
+        derive_ah = False
+        ah_temp = None
+        if vx["derive_ah"] and "ah" not in scalars:
+            if "ah" in nc.variables:
+                info("[voxel] the file holds 'ah' - using PALM's own "
+                     "absolute humidity instead of deriving it.")
+                scalars = scalars + ["ah"]
+            elif "q" not in nc.variables:
+                require_variables(
+                    nc, ["q"], "voxel", vx["file_from"],
+                    hint="Absolute humidity is derived from q. Add 'q' to "
+                         "data_output in the p3d (needs humidity = .TRUE.), "
+                         "or drop ah from voxel.variables.")
+            elif "ta" in nc.variables or "theta" in nc.variables:
+                derive_ah = True
+                ah_temp = "ta" if "ta" in nc.variables else "theta"
+                info("[voxel] no 'ah' in the file - deriving it from 'q', "
+                     "with the air temperature from '{}'.", ah_temp)
+            else:
+                require_variables(
+                    nc, ["ta"], "voxel", vx["file_from"],
+                    hint="Absolute humidity needs an air temperature: "
+                         "PALM's ta, or theta to derive it from.")
         do_velocity = bool(vx["do_velocity"])
         if do_velocity:
             require_variables(
@@ -226,6 +253,8 @@ def stage_voxel(cfg, grid):
         out_vars = (["u", "v", "w"] if do_velocity else []) + scalars
         if derive_ta:
             out_vars = out_vars + ["ta"]
+        if derive_ah:
+            out_vars = out_vars + ["ah"]
 
         with cfg.atomic_output(file_to, "voxel") as _tmp_out, \
                 Dataset(_tmp_out, "w", format="NETCDF4") as fout:
@@ -342,6 +371,41 @@ def stage_voxel(cfg, grid):
                           cfg["surface_pressure"])
                 pi = pi[:, None, None]
 
+            p_col = q_factor = ta_scale = None
+            if derive_ah:
+                # Absolute pressure on the output levels, (nz, 1, 1). The
+                # same hydrostatic Exner profile ta is derived from; with no
+                # theta in the file, a constant reference theta instead -
+                # for PRESSURE that is off by well under 0.1 %.
+                if pi is not None:
+                    pi_ah = pi.ravel()
+                elif "theta" in nc.variables:
+                    th0 = np.ma.masked_invalid(
+                        nc.variables["theta"][its[0], kz0:kzmax,
+                                              grid.ny0:grid.nymax,
+                                              grid.nx0:grid.nxmax])
+                    pi_ah = exner_profile(
+                        z_rel, np.ma.filled(th0.mean(axis=(1, 2)), np.nan),
+                        p_surface=cfg["surface_pressure"])
+                else:
+                    pi_ah = exner_simple(z_rel,
+                                         p_surface=cfg["surface_pressure"])
+                p_col = pressure_from_exner(pi_ah)[:, None, None]
+                if ah_temp == "theta" and pi is None:
+                    pi = pi_ah[:, None, None]
+                q_units = getattr(nc.variables["q"], "units", None)
+                q_factor = humidity_scale(q_units)
+                if ah_temp == "ta":
+                    ta_scale = temperature_scale(
+                        getattr(nc.variables["ta"], "units", None), "ta",
+                        dict(cfg["temperature_units"] or {}))
+                info("[voxel] deriving ah from q ({}): p = {:.0f} Pa at "
+                     "z = {:.0f} m, {:.0f} Pa at {:.0f} m.",
+                     q_units or "no units, taken as kg/kg",
+                     float(p_col.ravel()[0]), float(z_out[0]),
+                     float(p_col.ravel()[-1]),
+                     float(z_out[-1]))
+
             celsius = bool(cfg["celsius"])
             target = "C" if celsius else "K"
             overrides = dict(cfg["temperature_units"] or {})
@@ -373,6 +437,19 @@ def stage_voxel(cfg, grid):
                                   "Exner profile (PALM did not output ta)")
                     ov.derived_from = "theta"
                     continue
+                if var == "ah" and derive_ah:
+                    ov.units = "g m-3"
+                    ov.long_name = "absolute humidity (water vapour density)"
+                    ov.comment = (
+                        "derived as q * p / (Rd * Tv), Tv = T (1 + 0.608 q), "
+                        "with T from {} and p from a hydrostatic Exner "
+                        "profile (PALM did not output ah). PALM's q is the "
+                        "total water content, which equals specific "
+                        "humidity when no cloud water is present."
+                        .format("PALM's ta" if ah_temp == "ta"
+                                else "theta"))
+                    ov.derived_from = "q"
+                    continue
                 src = nc.variables.get(var)
                 if src is not None:
                     for att in ("units", "long_name"):
@@ -389,7 +466,7 @@ def stage_voxel(cfg, grid):
                     ov.palm2gis_output_units = str(getattr(ov, "units", "K"))
 
             # terrain mask from the first mass-grid variable at first time
-            mask_src = next((c for c in scalars + ["w"]
+            mask_src = next((c for c in scalars + ["w", "theta", "q", "ta"]
                              if c in nc.variables), None)
             terrain_mask = np.ma.getmaskarray(
                 nc.variables[mask_src][its[0], kz0:kzmax,
@@ -426,6 +503,34 @@ def stage_voxel(cfg, grid):
                     ta = convert_temperature(ta, "K", target, fill=FILL)
                     ta[terrain_mask] = FILL
                     fout.variables["ta"][q, ...] = ta
+                if derive_ah:
+                    fields = {}
+                    for name in ("q", ah_temp):
+                        fields[name] = np.ma.masked_invalid(
+                            np.ma.masked_equal(
+                                nc.variables[name][it, kz0:kzmax,
+                                                   grid.ny0:grid.nymax,
+                                                   grid.nx0:grid.nxmax],
+                                FILL)).astype("f8")
+                    qq = fields["q"] * q_factor
+                    if ah_temp == "theta":
+                        t_k = theta_to_ta(fields["theta"], pi)
+                    else:
+                        t_raw = np.ma.filled(fields["ta"], np.nan)
+                        t_k = np.ma.masked_invalid(convert_temperature(
+                            t_raw, ta_scale, "K"))
+                    if q == 0:
+                        q_max = float(qq.max()) if qq.count() else 0.0
+                        if q_max > 0.05:
+                            warning("[voxel] q reaches {:.3f} kg/kg, far "
+                                    "above any real humidity - check its "
+                                    "units ({}).", q_max,
+                                    getattr(nc.variables["q"], "units",
+                                            "none given"))
+                    ah = np.ma.filled(absolute_humidity(qq, t_k, p_col),
+                                      FILL)
+                    ah[terrain_mask] = FILL
+                    fout.variables["ah"][q, ...] = ah
 
     info("[voxel] wrote {}: {} x {} x {} x {} (t,z,y,x), {}",
          cfg.disp(file_to), len(its), z_out.size,

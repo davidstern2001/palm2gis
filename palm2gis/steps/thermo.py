@@ -250,3 +250,43 @@ def celsius_to_kelvin(vals, fill=None):
         good &= out != fill
     out[good] += K0
     return out
+
+
+# ------------------------------
+# 5. ABSOLUTE HUMIDITY
+# ------------------------------
+# Virtual temperature factor Rv/Rd - 1. Moist air is lighter than dry air
+# at the same T and p; ignoring it overstates the density by ~0.6 % per
+# 10 g/kg of vapour.
+EPS_V = 0.608
+
+
+def humidity_scale(units):
+    """Factor that turns PALM's `q` into kg/kg, from its `units` string.
+
+    PALM writes q in kg/kg. A g/kg label is honoured; anything unreadable
+    is taken as kg/kg, which the caller sanity-checks against the values.
+    """
+    u = str(units or "").lower().replace(" ", "")
+    if u.startswith(("g/kg", "gkg-1", "gkg^-1")):
+        return 1.0e-3
+    return 1.0
+
+
+def pressure_from_exner(pi):
+    """Absolute pressure [Pa] from the Exner function."""
+    return P0 * np.asarray(pi, dtype="f8") ** (1.0 / KAPPA)
+
+
+def absolute_humidity(q, ta_k, p):
+    """Water vapour density [g/m3] from specific humidity [kg/kg], air
+    temperature [K] and absolute pressure [Pa]:
+
+        rho_v = q * rho,  rho = p / (Rd * Tv),  Tv = T * (1 + 0.608 q)
+
+    Arrays broadcast, so `p` may be a (nz, 1, 1) profile against
+    (nz, ny, nx) fields. Masked inputs stay masked.
+    """
+    tv = ta_k * (1.0 + EPS_V * q)
+    return 1.0e3 * q * p / (RD * tv)
+
