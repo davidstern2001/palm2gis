@@ -1,39 +1,35 @@
 # ==============================================================
-# Minimal project config.
-# Everything not shown here comes from the hardcoded defaults,
-# applied automatically with a deep merge. See template.yaml for the full
-# reference of every available setting.
+# Minimal project config. Everything not shown takes its default;
+# template.yaml lists every setting.
 # ==============================================================
 
 project:
-  name: example_minimal
-  root: /storage/data/palm/example
-  output_dir: ./gis
+    name: example_minimal
+    root: /storage/data/palm/example
+    output_dir: ./gis
 
-domain:
-  static_driver: INPUT/example_static_N02
-  p3d: INPUT/example_p3d_N02          # or: nz + dz explicitly
+input:
+    static_driver: INPUT/example_static_N02
+    p3d:           INPUT/example_p3d_N02    # or: advanced.nz + advanced.dz
+    data_3d:       OUTPUT/DATA_3D_NETCDF_N02
+    surface_data:  OUTPUT/SURFACE_DATA_NETCDF_N02
 
 voxel:
-  enabled: true
-  file_from: OUTPUT/DATA_3D_NETCDF_N02
-  file_to: example_voxel.nc
-  scalars: ["theta"]
+    variables: [u, v, w, theta]
+    netcdf:
+        file: example_voxel.nc
 
 surfaces:
-  enabled: true
-  file_from: OUTPUT/SURFACE_DATA_NETCDF_N02
-  prefix: example_
-  variables: ["theta_surface"]
+    variables: [theta_surface]
+    all_elements_gpkg:
+        file: example_surfaces.gpkg
 
 wind:
-  enabled: true
-  file_from: OUTPUT/DATA_3D_NETCDF_N02
-  file_to: example_wind.gpkg
-  heights_agl: [2.0]
-  stride: 4
+    heights_above_surface: [2.0]
+    gpkg:
+        file: example_wind.gpkg
+        every_nth_column: 4
 
-# Everything else - CRS, bounds (default: no cut, all timesteps), drop_k0,
-# celsius (default false = kelvin), the stage list - comes from the
-# defaults. Add any key from template.yaml here only if THIS project
-# needs to differ.
+# Everything else - CRS, region (default: no cut, all timesteps),
+# celsius (default false = kelvin), canopy (off unless its section is
+# present) - comes from the defaults.
