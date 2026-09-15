@@ -2,19 +2,16 @@
 
 GIS counterpart of paraview_vis/utils/surf_gen.py. Instead of building VTU
 quads for ParaView, the unstructured surface elements (xs, ys, zs with
-azimuth/zenith) are split by orientation:
+azimuth/zenith) become 3D polygons:
 
-  * UPWARD-facing elements (zenith == 0: ground + roofs). For each grid
-    column the TOPMOST element is taken - i.e. what a nadir thermal camera
-    would see - and rasterised into one multiband GeoTIFF per variable
-    (band = timestep, band description = timestamp). Loads directly in
-    ArcGIS Pro / QGIS with correct georeferencing.
+  * Every ground, roof and wall element is a quad (PolygonZ) in absolute
+    coordinates, one row per element per timestep (elem_id, orient,
+    azimuth, z, z_agl, time, one column per variable), so the ArcGIS time
+    slider / QGIS temporal controller can animate it and the quads render
+    correctly in 3D scenes.
 
-  * WALL elements (zenith == 90). Each element becomes a vertical quad
-    (PolygonZ) in absolute coordinates, written to a GeoPackage in long
-    format (elem_id, azimuth, z_centre, time, one column per variable), so
-    the ArcGIS time slider / QGIS temporal controller can animate it and
-    the quads render correctly in 3D scenes.
+  * The same elements are written as a GeoPackage (QGIS), an ESRI
+    MultiPatch shapefile and a File Geodatabase (ArcGIS), each optional.
 
 Elements with other zenith values (sloped roofs, downward-facing) are
 counted and reported but not converted.
@@ -23,18 +20,16 @@ counted and reported but not converted.
 import numpy as np
 from netCDF4 import Dataset
 
-import rasterio
-from rasterio.transform import from_origin
 import geopandas as gpd
 import pyogrio
-from shapely.geometry import LineString, MultiPolygon, Polygon
+from shapely.geometry import MultiPolygon, Polygon
 
 from ..log import debug, get_logger, info, warning
-from .georef import check_product, check_raw_input, select_times
+from .georef import (check_product, check_raw_input, require_variables,
+                     select_times)
 from .thermo import convert_temperature, exner_simple, is_celsius_exempt, \
     is_temperature, temperature_scale, theta_to_ta
-from .qgis_style import (embed_gpkg_style, raster_qml, vector_qml,
-                         write_sidecar)
+from .qgis_style import embed_gpkg_style, vector_qml, write_sidecar
 
 log = get_logger()
 
@@ -80,8 +75,7 @@ def output_vars(sf, available=None, verbose=False):
     With surfaces.derive_t_surf the actual SURFACE temperature `t_surf` is
     ENSURED: if the file already holds it, PALM's own value is used as-is;
     only when it is absent is it derived from the surface potential
-    temperature. The same list drives the raster, the mesh NetCDF and the
-    element layers, so a field is never present in one product and missing
+    temperature. The same list drives every element layer, so a field is never present in one product and missing
     from another.
 
     `available` is the set of variable names in the source file. Listed
@@ -166,175 +160,6 @@ def _derive_values(cfg, vals, z_elem, derive, name=None, src_units=None):
 
 
 # ------------------------------
-# 3. TOP-VIEW NETCDF (QGIS MESH LAYER)
-# ------------------------------
-def _topview_netcdf(cfg, grid, nc, its, times, top_s, valid, zs,
-                    i0, i1, j0, j1, path):
-    """Same top-view fields as the GeoTIFF, but as a CF NetCDF.
-
-    QGIS opens this as a MESH layer, and MDAL reads the CF time axis
-    natively - the Temporal Controller then works with no style sidecar
-    and no band-to-time mapping to get wrong. All configured variables go
-    into one file, appearing as separate dataset groups on the layer.
-    """
-    from netCDF4 import Dataset as NCDataset
-    from .voxel import write_crs_var
-
-    sf = cfg["surfaces"]
-    nj, ni = top_s.shape
-    h, w = j1 - j0, i1 - i0
-
-    with NCDataset(path, "w", format="NETCDF4") as fout:
-        fout.Conventions = "CF-1.8"
-        fout.title = "PALM surface output (top view) for QGIS mesh layers"
-
-        fout.createDimension("x", w)
-        fout.createDimension("y", h)
-        fout.createDimension("time", len(its))
-
-        xv = fout.createVariable("x", "f8", ("x",))
-        xv[:] = (grid.origin_x
-                 + (np.arange(i0, i1) + 0.5) * grid.dx)
-        xv.standard_name = "projection_x_coordinate"
-        xv.units = "m"
-        xv.axis = "X"
-
-        yv = fout.createVariable("y", "f8", ("y",))
-        yv[:] = (grid.origin_y
-                 + (np.arange(j0, j1) + 0.5) * grid.dy)
-        yv.standard_name = "projection_y_coordinate"
-        yv.units = "m"
-        yv.axis = "Y"
-
-        tv = fout.createVariable("time", "f8", ("time",))
-        t_sel = np.asarray(times)[its]
-        if np.all(np.isfinite(t_sel)) and np.all(np.abs(t_sel) < 1.0e12):
-            tv[:] = np.round(t_sel)
-            tv.standard_name = "time"
-            tv.units = "seconds since {}".format(
-                grid.origin_time.strftime("%Y-%m-%d %H:%M:%S"))
-            tv.calendar = "standard"
-        else:
-            tv[:] = np.arange(len(its), dtype="f8")
-            tv.long_name = "record index (no valid time values in input)"
-            tv.units = "1"
-        tv.axis = "T"
-
-        gm = write_crs_var(fout, grid.crs)
-
-        for name, var, derive in output_vars(sf, nc.variables):
-            ov = fout.createVariable(name, "f4", ("time", "y", "x"),
-                                     fill_value=FILL, zlib=True,
-                                     complevel=4)
-            ov.grid_mapping = gm
-            # See the note in voxel.py: no auxiliary coordinates.
-            if derive:
-                ov.units = "degC" if cfg["celsius"] else "K"
-                ov.long_name = ("surface air temperature derived from {} "
-                                "via the Exner function".format(var))
-            else:
-                src = nc.variables.get(var)
-                if src is not None:
-                    for att in ("units", "long_name"):
-                        if hasattr(src, att):
-                            ov.setncattr(att, getattr(src, att))
-                if is_temperature(name) and not is_celsius_exempt(name):
-                    ov.units = "degC" if cfg["celsius"] else "K"
-            # RELATIVE height: this feeds the Exner function, which pairs
-            # it with surface_pressure at the model's z = 0. Not abs_z.
-            z_top = zs[top_s[valid]]
-            for b, it in enumerate(its):
-                data = np.ma.filled(nc.variables[var][it, :], FILL)
-                band = np.full((nj, ni), FILL, dtype=np.float32)
-                band[valid] = _derive_values(
-                    cfg, data[top_s[valid]], z_top, derive, name=name,
-                    src_units=getattr(nc.variables[var], "units", None))
-                ov[b, ...] = band[j0:j1, i0:i1]
-
-    info("[surfaces] wrote {}: {} vars x {} times (mesh layer)",
-         cfg.disp(path), len(sf["variables"]), len(its))
-
-
-# ------------------------------
-# 4. TOP-VIEW RASTER (ROOFS + GROUND)
-# ------------------------------
-def _topview_raster(cfg, grid, nc, its, times, xs, ys, zs, zen, sel,
-                    targets, nc_path=None):
-    sf = cfg["surfaces"]
-    dx, dy = grid.dx, grid.dy
-
-    up = sel & (np.abs(zen) < 1.0e-3)
-    idx_up = np.where(up)[0]
-    if idx_up.size == 0:
-        warning("[surfaces] no upward-facing elements in bounds - "
-                "top-view raster skipped.")
-        return
-
-    # map each upward element to a grid cell, keep the topmost per cell.
-    #
-    # This is an argmax-by-group, which numpy does natively. The Python
-    # loop it replaces ran once per upward surface element, which on a real
-    # domain is millions of iterations and dominated the stage. Sorting by
-    # (cell, height) and taking the LAST entry of each cell group leaves the
-    # highest element per cell, exactly as the running comparison did.
-    i = np.round((xs[idx_up] - dx / 2.0) / dx).astype(int)
-    j = np.round((ys[idx_up] - dy / 2.0) / dy).astype(int)
-    ni, nj = int(i.max()) + 1, int(j.max()) + 1
-    top_z = np.full((nj, ni), -np.inf)
-    top_s = np.full((nj, ni), -1, dtype=np.int64)
-
-    cell = j.astype(np.int64) * ni + i.astype(np.int64)
-    z_up = zs[idx_up]
-    order = np.lexsort((z_up, cell))          # by cell, then by height
-    cell_s, z_s, idx_s = cell[order], z_up[order], idx_up[order]
-    last = np.empty(cell_s.size, dtype=bool)  # last of each cell run
-    last[-1] = True
-    last[:-1] = cell_s[1:] != cell_s[:-1]
-    sel_cell, sel_z, sel_idx = cell_s[last], z_s[last], idx_s[last]
-    top_z.reshape(-1)[sel_cell] = sel_z
-    top_s.reshape(-1)[sel_cell] = sel_idx
-
-    valid = top_s >= 0
-    debug("[surfaces] {} upward elements -> {} raster cells",
-          idx_up.size, int(valid.sum()))
-
-    # georeferencing: raster origin at top-left, so flip y on write
-    i0, i1 = int(i.min()), ni
-    j0, j1 = int(j.min()), nj
-    transform = from_origin(grid.origin_x + i0 * dx,
-                            grid.origin_y + j1 * dy, dx, dy)
-
-    if nc_path is not None:
-        _topview_netcdf(cfg, grid, nc, its, times, top_s, valid, zs,
-                        i0, i1, j0, j1, nc_path)
-
-    dts = grid.times_to_datetime(times)
-    z_top = zs[top_s[valid]]
-    src_of = {n: (v, d) for n, v, d in output_vars(sf, nc.variables)}
-    for name, path in targets.items():
-        var, derive = src_of.get(name, (name, False))
-        h, w = j1 - j0, i1 - i0
-        with rasterio.open(path, "w", driver="GTiff", height=h, width=w,
-                           count=len(its), dtype="float32",
-                           crs=grid.rio_crs(),
-                           transform=transform, nodata=FILL,
-                           compress="deflate") as dst:
-            for b, it in enumerate(its, start=1):
-                data = np.ma.filled(nc.variables[var][it, :], FILL)
-                band = np.full((nj, ni), FILL, dtype=np.float32)
-                band[valid] = _derive_values(
-                    cfg, data[top_s[valid]], z_top, derive, name=name,
-                    src_units=getattr(nc.variables[var], "units", None))
-                band = band[j0:j1, i0:i1]
-                dst.write(band[::-1, :], b)          # north-up
-                dst.set_band_description(b, grid.label(dts[it], it))
-        if cfg["qgis_styles"]:
-            write_sidecar(path, raster_qml([dts[it] for it in its]))
-        _ensure_raster_crs(cfg, grid, path)
-        info("[surfaces] wrote {}: {} bands", cfg.disp(path), len(its))
-
-
-# ------------------------------
 # 3. SURFACE ELEMENT POLYGONS
 # ------------------------------
 _AZ_FACING = {0: "N", 90: "E", 180: "S", 270: "W"}
@@ -401,20 +226,6 @@ def _orientation(zen, az):
     if abs(zen - 90.0) < 1.0e-3:
         return "wall_" + (_wall_facing(az) or "?")
     return "other"
-
-
-def _wall_trace(poly):
-    """Horizontal trace of a vertical quad, as a 2D LineString.
-
-    The quad spans one cell horizontally and one dz vertically, so its
-    footprint is a single segment; Z is dropped so the line renders in a
-    plain 2D map view.
-    """
-    xy = sorted(set((round(x, 6), round(y, 6))
-                    for x, y, *_ in poly.exterior.coords))
-    if len(xy) < 2:                       # degenerate, should not happen
-        return poly
-    return LineString([xy[0], xy[-1]])
 
 
 def _wall_quad(x, y, z, az, grid):
@@ -593,7 +404,6 @@ def _elements_gpkg(cfg, grid, nc, its, times, xs, ys, zs, zen, az, sel,
                    path, idx, kind):
     """Write one GeoPackage row per surface element per timestep.
 
-    `idx` selects which elements go in (all of them, or just the walls).
     Every face of the static driver's geometry is represented: ground,
     roofs and each of the four wall orientations, each as a PolygonZ in
     absolute coordinates carrying the configured variables.
@@ -632,13 +442,6 @@ def _elements_gpkg(cfg, grid, nc, its, times, xs, ys, zs, zen, az, sel,
     # so the row warning above fired only after the memory had already
     # been committed. Peak memory is now one timestep regardless of how
     # many are selected.
-    is_wall = np.array([o.startswith("wall_") for o in orient])
-    wall_idx = np.where(is_wall)[0]
-    want_lines = bool(sf["wall_lines"]) and wall_idx.size > 0
-    line_layer = layer + "_2d"
-    wall_geoms = ([_wall_trace(geoms[k]) for k in wall_idx]
-                  if want_lines else None)
-
     # An existing file must not be appended to, or a rerun doubles it.
     if path.exists():
         path.unlink()
@@ -683,16 +486,6 @@ def _elements_gpkg(cfg, grid, nc, its, times, xs, ys, zs, zen, az, sel,
             if col.size:
                 v_lo = col.min() if v_lo is None else min(v_lo, col.min())
                 v_hi = col.max() if v_hi is None else max(v_hi, col.max())
-
-        # Vertical faces have a ZERO-AREA footprint in the map plane, so a
-        # 2D view of the polygons shows nothing at all. Write their
-        # horizontal trace as lines too, in the same GeoPackage, so wall
-        # temperatures can be mapped and clicked in a normal plan view.
-        if want_lines:
-            lines = frame.iloc[wall_idx].copy()
-            lines["geometry"] = wall_geoms
-            lines.to_file(path, layer=line_layer, driver="GPKG",
-                          mode="w" if n == 0 else "a")
         n_written += idx.size
         debug("[surfaces] {}: timestep {}/{} written ({} rows so far)",
               cfg.disp(path), n + 1, len(its), n_written)
@@ -700,33 +493,17 @@ def _elements_gpkg(cfg, grid, nc, its, times, xs, ys, zs, zen, az, sel,
     qml = None
     if cfg["qgis_styles"]:
         step = _median_step(dts, its)
-        # The polygon layer carries true Z, so it gets the 3D renderer;
-        # the 2D trace layer shares the SAME ramp over the same variable
-        # and range, so plan view and scene agree.
+        # The polygon layer carries true Z, so it gets the 3D renderer.
         qml = vector_qml("time", step, geom="polygon", attr=ramp_attr,
                          vmin=v_lo, vmax=v_hi,
                          clamp_absolute=bool(cfg["qgis_styles_3d"]))
         write_sidecar(path, qml)
         embed_gpkg_style(path, layer, qml)
 
-    if want_lines:
-        if qml is not None:
-            embed_gpkg_style(path, line_layer,
-                             vector_qml("time", step, geom="line",
-                                        attr=ramp_attr, vmin=v_lo,
-                                        vmax=v_hi))
-        info("[surfaces] wrote {}: layer '{}' with {} wall traces "
-             "(2D-visible)", cfg.disp(path), line_layer, int(wall_idx.size))
     counts = gpd.pd.Series(orient).value_counts().to_dict()
     info("[surfaces] wrote {}: {} elements x {} times ({})",
          cfg.disp(path), idx.size, len(its),
          ", ".join(f"{k} {v}" for k, v in sorted(counts.items())))
-
-
-def _walls_gpkg(cfg, grid, nc, its, times, xs, ys, zs, zen, az, sel, path):
-    idx = np.where(sel & (np.abs(zen - 90.0) < 1.0e-3))[0]
-    _elements_gpkg(cfg, grid, nc, its, times, xs, ys, zs, zen, az, sel,
-                   path, idx, "walls")
 
 
 def _all_elements_gpkg(cfg, grid, nc, its, times, xs, ys, zs, zen, az, sel,
@@ -750,26 +527,20 @@ def stage_surfaces(cfg, grid):
         check_product(nc, "surfaces", sf["file_from"])
         check_raw_input(nc, grid, "surfaces", sf["file_from"])
         available = set(nc.variables)
-    plan = output_vars(sf, available, verbose=True)
+        plan = output_vars(sf, available, verbose=True)
+        # Checked up front: a listed variable the file lacks used to fail
+        # halfway through with a bare KeyError naming only the variable.
+        require_variables(nc, sorted({v for _n, v, _d in plan}), "surfaces",
+                          sf["file_from"],
+                          hint="Adjust surfaces.variables to what this "
+                               "file holds.")
     derived = [n for n, _v, d in plan if d]
     if derived:
         info("[surfaces] deriving {} from the surface potential "
              "temperature.", ", ".join(derived))
 
-    targets = {}
-    if sf["write_topview_raster"]:
-        for name, _var, _derive in plan:
-            path = cfg.out_path("{}{}_topview.tif".format(sf["prefix"],
-                                                          name))
-            if cfg.prepare_output(path, "surfaces"):
-                targets[name] = path
-    nc_path = cfg.out_path("{}surface_2d.nc".format(sf["prefix"]))
-    do_nc = (sf["write_topview_netcdf"]
-             and cfg.prepare_output(nc_path, "surfaces"))
-    walls_path = cfg.out_path("{}walls.gpkg".format(sf["prefix"]))
-    do_walls = (sf["write_walls_gpkg"]
-                and cfg.prepare_output(walls_path, "surfaces"))
-    all_path = cfg.out_path("{}surfaces.gpkg".format(sf["prefix"]))
+    all_path = cfg.out_path(sf["all_elements_to"]
+                            or "{}surfaces.gpkg".format(sf["prefix"]))
     do_all = (sf["write_all_elements_gpkg"]
               and cfg.prepare_output(all_path, "surfaces"))
     mp_path = cfg.out_path(sf["multipatch_to"]
@@ -780,7 +551,7 @@ def stage_surfaces(cfg, grid):
                              or "{}surfaces.gdb".format(sf["prefix"]))
     do_fgdb = (sf["write_fgdb"]
                and cfg.prepare_output(fgdb_path, "surfaces"))
-    if not (targets or do_nc or do_walls or do_all or do_mp or do_fgdb):
+    if not (do_all or do_mp or do_fgdb):
         info("[surfaces] nothing to write, skipping.")
         return
 
@@ -795,12 +566,6 @@ def stage_surfaces(cfg, grid):
             warning("[surfaces] {} elements with zenith not in (0, 90) - "
                     "not converted (values: {}).", int(other.sum()), vals)
 
-        if targets or do_nc:
-            _topview_raster(cfg, grid, nc, its, times, xs, ys, zs, zen, sel,
-                            targets, nc_path if do_nc else None)
-        if do_walls:
-            _walls_gpkg(cfg, grid, nc, its, times, xs, ys, zs, zen, az, sel,
-                        walls_path)
         if do_all:
             _all_elements_gpkg(cfg, grid, nc, its, times, xs, ys, zs, zen,
                                az, sel, all_path)
@@ -832,37 +597,3 @@ def _median_step(dts, its, default=3600.0):
     gaps = sorted((ts[i + 1] - ts[i]).total_seconds()
                   for i in range(len(ts) - 1))
     return gaps[len(gaps) // 2] or default
-
-
-# ------------------------------
-# 6. RASTER CRS REPAIR
-# ------------------------------
-def _ensure_raster_crs(cfg, grid, path):
-    """Verify the written raster carries a CRS, and repair it if not.
-
-    A CRS that constructs fine can still fail to be encoded into a GeoTIFF
-    on installations with a stale or mismatched PROJ database, leaving the
-    file unreferenced. Reopen it, and if the CRS is missing try the
-    remaining candidates in place (WKT, the config string, the EPSG form)
-    before giving up with a warning.
-    """
-    candidates = grid.rio_crs_candidates()
-    with rasterio.open(path) as chk:
-        if chk.crs is not None:
-            return True
-    for cand in candidates:
-        try:
-            with rasterio.open(path, "r+") as dst:
-                dst.crs = cand
-            with rasterio.open(path) as chk:
-                if chk.crs is not None:
-                    debug("[surfaces] CRS repaired in place on {}",
-                          cfg.disp(path))
-                    return True
-        except Exception:
-            continue
-    warning("[surfaces] {} has NO CRS - GDAL could not encode '{}'. The "
-            "layer will not line up on a map; check the PROJ installation "
-            "(stale proj.db, or a PROJ_DATA/PROJ_LIB left over from "
-            "another install).", cfg.disp(path), grid.crs_raw)
-    return False

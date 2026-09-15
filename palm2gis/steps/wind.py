@@ -31,6 +31,23 @@ log = get_logger()
 # ------------------------------
 # 1. GRIDDED NETCDF (ARCGIS FLOW RENDERER)
 # ------------------------------
+def _warn_above_top(inside, z):
+    """Say how many samples fell above the file's top level (-> NoData).
+
+    A vertically cut input (palm_postproc splitz) or a tall building with
+    a large height above it puts surface + h above the last level. The
+    index used to be clipped to that last level, so those samples carried
+    wind from a different height under the requested label.
+    """
+    for h, ok in inside.items():
+        n_out = int((~ok).sum())
+        if n_out:
+            warning("[wind] {} of {} columns: {:g} m above the surface is "
+                    "above the file's top level ({:g} m) - written as "
+                    "NoData.", n_out, ok.size, h, float(z[-1]))
+
+
+
 def _wind_netcdf(cfg, grid, nc, its, times, heights, z, path):
     """Regular (time, height, y, x) grid of u, v, w, speed and dir_met.
 
@@ -69,10 +86,12 @@ def _wind_netcdf(cfg, grid, nc, its, times, heights, z, path):
     y_abs = grid.abs_y(np.asarray(grid.y_stat))[jj_g]
 
     # k index of the first level at or above the local surface + h
-    k_of = {}
+    k_of, inside = {}, {}
     for h in heights:
         k = np.searchsorted(z, grid.elev[jg, ig] + float(h))
+        inside[h] = k < nz
         k_of[h] = np.clip(k, 0, nz - 1)
+    _warn_above_top(inside, z)
 
     with Dataset(path, "w", format="NETCDF4") as fout:
         fout.Conventions = "CF-1.8"
@@ -90,9 +109,9 @@ def _wind_netcdf(cfg, grid, nc, its, times, heights, z, path):
         xv.units = "m"
         xv.axis = "X"
 
-        # y stays ASCENDING. The GeoTIFF writer flips rows because GeoTIFF
-        # is a north-up raster format; netCDF is not, and flipping here
-        # would mirror the field.
+        # y stays ASCENDING. GeoTIFF is a north-up raster format and needs
+        # its rows flipped; netCDF is not, and flipping here would mirror
+        # the field.
         yv = fout.createVariable("y", "f8", ("y",))
         yv[:] = y_abs
         yv.standard_name = "projection_y_coordinate"
@@ -149,9 +168,11 @@ def _wind_netcdf(cfg, grid, nc, its, times, heights, z, path):
                            grid.nx0, grid.nxmax)
             for hidx, h in enumerate(heights):
                 k = k_of[h]
-                u = u3[k, jg, ig]
-                v = v3[k, jg, ig]
-                w = w3[k, jg, ig]
+                # A sample above the file's top level is NoData, not
+                # the top level's value relabelled as the requested height.
+                u = np.where(inside[h], u3[k, jg, ig], np.nan)
+                v = np.where(inside[h], v3[k, jg, ig], np.nan)
+                w = np.where(inside[h], w3[k, jg, ig], np.nan)
                 sp = np.hypot(u, v)
                 dr = (270.0 - np.degrees(np.arctan2(v, u))) % 360.0
                 for name, val in (("u", u), ("v", v), ("w", w),
@@ -215,8 +236,10 @@ def stage_wind(cfg, grid):
         # per column: k index of the first level >= local surface + h_agl
         k_idx = {}
         z_abs = {}
+        inside = {}
         for h in heights:
             k = np.searchsorted(z, grid.elev[jf, if_] + h)
+            inside[h] = k < nz
             k_idx[h] = np.clip(k, 0, nz - 1)
             # The true height of the sample, for the 3D geometry. The 2D
             # point layer carried this only as the `height_agl` attribute,
@@ -226,6 +249,7 @@ def stage_wind(cfg, grid):
             # the sample height needs origin_z to become a real elevation.
             # Without it the 3D arrows sat origin_z metres underground.
             z_abs[h] = grid.abs_z(grid.elev[jf, if_] + h)
+        _warn_above_top(inside, z)
 
         x_abs = grid.abs_x(grid.x_stat)
         y_abs = grid.abs_y(grid.y_stat)
@@ -253,8 +277,8 @@ def stage_wind(cfg, grid):
             parts3 = []
             for h in heights:
                 k = k_idx[h]
-                u = u3[k, jf, if_]
-                v = v3[k, jf, if_]
+                u = np.where(inside[h], u3[k, jf, if_], np.nan)
+                v = np.where(inside[h], v3[k, jf, if_], np.nan)
                 speed = np.hypot(u, v)
                 # `speed` and `dir_met` stay HORIZONTAL even when the 3D
                 # geometry tilts with w, so the two layers remain directly
@@ -271,14 +295,16 @@ def stage_wind(cfg, grid):
                                               crs=grid.crs))
                 if not lines_3d:
                     continue
-                w = (w3[k, jf, if_] if w3 is not None
-                     else np.zeros_like(u))
+                w = (np.where(inside[h], w3[k, jf, if_], np.nan)
+                     if w3 is not None else np.zeros_like(u))
                 zb = z_abs[h]
                 segs = [LineString([(x0, y0, z0),
                                     (x0 + ux * scale, y0 + vy * scale,
                                      z0 + wz * scale)])
                         for x0, y0, z0, ux, vy, wz
-                        in zip(x_abs[if_], y_abs[jf], zb, u, v, w)]
+                        in zip(x_abs[if_], y_abs[jf], zb,
+                               np.nan_to_num(u), np.nan_to_num(v),
+                               np.nan_to_num(w))]
                 a3 = dict(attrs)
                 a3["z"] = zb.astype(np.float32)
                 if w3 is not None:

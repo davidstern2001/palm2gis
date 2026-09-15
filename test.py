@@ -246,7 +246,6 @@ _GRID_FOR_CHECKS = None
 def verify_outputs(out):
     import numpy as _np_thermo
     import numpy as np
-    import rasterio
     import geopandas as gpd
     from netCDF4 import Dataset
 
@@ -296,12 +295,7 @@ def verify_outputs(out):
           "thermo: Exner profile is anchored at z = 0, not at the cut base",
           failures)
 
-    # derived temperature must reach EVERY surface product, not just one
-    with Dataset(out / "test_surface_2d.nc") as nc:
-        check("t_surf" in nc.variables,
-              "thermo: t_surf in the mesh NetCDF", failures)
-    check((out / "test_t_surf_topview.tif").exists(),
-          "thermo: t_surf raster written", failures)
+    # derived temperature must reach the surface element layer
     allel_ta = gpd.read_file(out / "test_surfaces.gpkg", layer="surfaces")
     check("t_surf" in allel_ta.columns
           and (allel_ta["t_surf"] > allel_ta["theta_surface"]).all(),
@@ -328,41 +322,12 @@ def verify_outputs(out):
           "thermo: the theta_surf spelling is accepted too", failures)
 
     # -- surfaces ----------------------------------------------------------
-    with rasterio.open(out / "test_theta_surface_topview.tif") as r:
-        check(r.count == NT, "surfaces: one raster band per timestep",
-              failures)
-        check(r.crs is not None, "surfaces: the raster carries a CRS",
-              failures)
-        check(r.bounds.left == ORIGIN_X and r.bounds.bottom == ORIGIN_Y,
-              "surfaces: raster georeferencing at the domain origin",
-              failures)
-        b = r.read(1)
-        check(np.allclose(b[b != r.nodata], 300.0),
-              "surfaces: top-view values (upward theta_surface = 300)",
-              failures)
-
-    # CF NetCDF for QGIS mesh layers: time axis read natively by MDAL
-    with Dataset(out / "test_surface_2d.nc") as nc:
-        check(nc["time"].units.startswith("seconds since 2026-07-15"),
-              "surfaces: mesh NetCDF carries a CF time axis", failures)
-        check(nc["theta_surface"].shape == (NT, 20, 20),
-              "surfaces: mesh NetCDF is (time, y, x)", failures)
-        check(float(nc["x"][0]) == ORIGIN_X + DX / 2.0,
-              "surfaces: mesh NetCDF x in absolute coordinates", failures)
-
-    walls = gpd.read_file(out / "test_walls.gpkg", layer="walls")
-    check(walls.geometry.iloc[0].has_z, "surfaces: walls are PolygonZ",
-          failures)
-    check(walls["time"].nunique() == NT,
-          "surfaces: walls carry all timesteps", failures)
-    # Exact, not floor-divided: the GeoPackage is written one timestep at a
-    # time and appended, so a botched append would either duplicate rows or
-    # drop them. 32 wall faces x NT timesteps, no more and no less.
-    check(len(walls) == 32 * NT,
-          f"surfaces: walls has exactly {32 * NT} rows, got {len(walls)}",
-          failures)
-    check(walls.groupby("rec").size().nunique() == 1,
-          "surfaces: every timestep contributed the same row count",
+    # the removed products must stay removed
+    gone = ["test_theta_surface_topview.tif", "test_t_surf_topview.tif",
+            "test_surface_2d.nc", "test_walls.gpkg", "test_lai.tif",
+            "test_canopy_height.tif"]
+    check(not any((out / g).exists() for g in gone),
+          "removed outputs: no top-view, walls-only, LAI or CHM files",
           failures)
 
     # every surface element: 400 ground/roof faces + 32 wall faces
@@ -387,21 +352,22 @@ def verify_outputs(out):
           "surfaces: z_agl separates roofs (8 m) from ground", failures)
     check(allel.geometry.iloc[0].has_z and allel["theta_surface"].notna().all(),
           "surfaces: all-element layer is PolygonZ with values", failures)
+    up0 = allel[(allel.orient == "up") & (allel.rec == allel.rec.min())]
+    check(np.allclose(up0["theta_surface"], 300.0),
+          "surfaces: upward theta_surface = 300 at the first record",
+          failures)
+    walls = allel[allel.orient.str.startswith("wall_")]
+    check(len(walls) == 32 * NT and walls["time"].nunique() == NT,
+          f"surfaces: {32 * NT} wall rows over {NT} timesteps", failures)
+    import pyogrio as _pyo
+    check([l[0] for l in _pyo.list_layers(out / "test_surfaces.gpkg")
+           if l[0] != "layer_styles"] == ["surfaces"],
+          "surfaces: GeoPackage holds only the element layer (no _2d)",
+          failures)
 
     # -- QGIS style sidecars ------------------------------------------------
     import sqlite3
     import xml.dom.minidom as minidom
-
-    qml = out / "test_theta_surface_topview.qml"
-    check(qml.exists(), "qgis: raster style sidecar written", failures)
-    if qml.exists():
-        doc = minidom.parse(str(qml))          # also proves well-formedness
-        temporal = doc.getElementsByTagName("temporal")[0]
-        ranges = doc.getElementsByTagName("range")
-        check(temporal.getAttribute("mode") == "3" and len(ranges) == NT,
-              "qgis: raster QML maps every band to a time range", failures)
-        check(ranges[0].getAttribute("begin") == "2026-07-15T10:00:00Z",
-              "qgis: raster band times are explicit UTC", failures)
 
     vqml = out / "test_wind.qml"
     check(vqml.exists(), "qgis: vector style sidecar written", failures)
@@ -410,27 +376,6 @@ def verify_outputs(out):
         check(t.getAttribute("mode") == "1"
               and t.getAttribute("startField") == "time",
               "qgis: vector QML reads time from the time field", failures)
-
-    # the repair path must recover a raster that lands without a CRS
-    import numpy as _np
-    import rasterio as _rio
-    from rasterio.transform import from_origin as _fo
-    from palm2gis.steps.surfaces import _ensure_raster_crs
-
-    class _Cfg:
-        def disp(self, p):
-            return Path(p).name
-
-    probe = out / "_crs_probe.tif"
-    with _rio.open(probe, "w", driver="GTiff", height=2, width=2, count=1,
-                   dtype="float32", transform=_fo(0, 2, 1, 1)) as d:
-        d.write(_np.zeros((2, 2), "float32"), 1)      # written with NO crs
-    repaired = _ensure_raster_crs(_Cfg(), _GRID_FOR_CHECKS, probe)
-    with _rio.open(probe) as r:
-        check(repaired and r.crs is not None,
-              "qgis: a raster written without a CRS is repaired in place",
-              failures)
-    probe.unlink()
 
     con = sqlite3.connect(out / "test_wind.gpkg")
     rows = con.execute("SELECT f_table_name, useAsDefault FROM "
@@ -473,21 +418,11 @@ def verify_outputs(out):
     nml.unlink()
 
     # -- canopy (LAD) ------------------------------------------------------
-    # 3 x 3 columns, 3 levels of LAD = 0.5 on dz_lad = 2 m.
-    with rasterio.open(out / "test_lai.tif") as r:
-        v = r.read(1)[r.read(1) != r.nodata]
-        check(v.size == 9 and _np_thermo.allclose(v, 0.5 * 3 * DZ),
-              f"canopy: LAI = LAD x depth ({v[0]:.2f} over {v.size} cells)",
-              failures)
-        check(r.crs is not None, "canopy: LAI raster carries a CRS",
-              failures)
-    with rasterio.open(out / "test_canopy_height.tif") as r:
-        v = r.read(1)[r.read(1) != r.nodata]
-        check(_np_thermo.allclose(v, 3 * DZ),
-              f"canopy: canopy height = {v[0]:.1f} m above terrain",
-              failures)
     with Dataset(out / "test_lad_3d.nc") as nc:
         nc.set_auto_mask(False)
+        check("coordinates" not in nc["lad"].ncattrs(),
+              "canopy: no auxiliary `coordinates` attribute (ArcGIS)",
+              failures)
         lad = nc["lad"][:]
         check(int((lad > 0).sum()) == 27,
               "canopy: LAD volume holds every canopy cell", failures)
@@ -744,6 +679,22 @@ def verify_regressions(tmp, out, pipeline_main):
     check(str(fg["elem_id"].dtype) == "int32",
           "fgdb: index fields stay integers", failures)
 
+    # -- removed config keys -----------------------------------------------
+    from palm2gis.config import Config as _Config
+    cfg_old = tmp / "config_removed_keys.yaml"
+    cfg_old.write_text((tmp / "config.yaml").read_text()
+                       .replace("  write_all_elements_gpkg: true",
+                                "  write_all_elements_gpkg: true\n"
+                                "  write_topview_raster: true\n"
+                                "  write_walls_gpkg: false")
+                       .replace("  write_volume: true",
+                                "  write_volume: true\n  write_lai: true"))
+    c_old = _Config(str(cfg_old))
+    check("write_topview_raster" not in c_old["surfaces"]
+          and "write_walls_gpkg" not in c_old["surfaces"]
+          and "write_lai" not in c_old["canopy"],
+          "config: removed keys load and are dropped", failures)
+
     # -- gridded wind ------------------------------------------------------
     with Dataset(out / "test_wind.nc") as nc:
         check(nc["u"].dimensions == ("time", "height", "y", "x"),
@@ -804,10 +755,16 @@ def verify_fill_times(tmp, pipeline_main):
     (~1e36). Those values must never be treated as seconds - they overflow
     datetime - and the stage must still produce usable layers."""
     import geopandas as gpd
-    import rasterio
     from netCDF4 import Dataset
 
     failures = []
+    gpkg = tmp / "out" / "test_surfaces.gpkg"
+
+    def second_time():
+        el = gpd.read_file(gpkg, layer="surfaces")
+        t = el[el.rec == sorted(el.rec.unique())[1]]["time"].iloc[0]
+        return str(t)[:19]
+
     with Dataset(tmp / "test_surf", "a") as nc:
         nc["time"][:] = 9.969209968386869e36
 
@@ -816,13 +773,10 @@ def verify_fill_times(tmp, pipeline_main):
                         "surfaces", "--overwrite"])
     check(rc == 0, "fill times: the stage completes instead of overflowing",
           failures)
-    with rasterio.open(tmp / "out" / "test_theta_surface_topview.tif") as r:
-        check(r.descriptions[0] == "record 0",
-              "fill times: raster bands fall back to record labels",
-              failures)
-    walls = gpd.read_file(tmp / "out" / "test_walls.gpkg", layer="walls")
-    check(walls["time"].isna().all() and "rec" in walls.columns,
-          "fill times: walls carry an empty time and a rec column", failures)
+    el = gpd.read_file(gpkg, layer="surfaces")
+    check(el["time"].isna().all() and "rec" in el.columns,
+          "fill times: elements carry an empty time and a rec column",
+          failures)
 
     # (b) the p3d supplies the interval - no manual settings at all
     (tmp / "p3d_probe").write_text(
@@ -833,10 +787,8 @@ def verify_fill_times(tmp, pipeline_main):
     base = cfgp0.read_text()
     cfgp0.write_text(base.replace("  nz: 12\n  dz: 2.0", "  p3d: p3d_probe"))
     pipeline_main(["-c", str(cfgp0), "--stages", "surfaces", "--overwrite"])
-    with rasterio.open(tmp / "out" / "test_theta_surface_topview.tif") as r:
-        check(r.descriptions[1] == "2026-07-15 10:20:00",
-              "fill times: interval read from the p3d automatically",
-              failures)
+    check(second_time() == "2026-07-15 10:20:00",
+          "fill times: interval read from the p3d automatically", failures)
     cfgp0.write_text(base)
 
     # (c) bounds.time_step given: real timestamps reconstructed
@@ -846,11 +798,175 @@ def verify_fill_times(tmp, pipeline_main):
                                      "bounds:\n  zmax: 10\n"
                                      "  time_step: 600\n  time_start: 0.0"))
     pipeline_main(["-c", str(cfgp), "--stages", "surfaces", "--overwrite"])
-    with rasterio.open(tmp / "out" / "test_theta_surface_topview.tif") as r:
-        check(r.descriptions[1] == "2026-07-15 10:10:00",
-              "fill times: bounds.time_step reconstructs real timestamps",
-              failures)
+    check(second_time() == "2026-07-15 10:10:00",
+          "fill times: bounds.time_step reconstructs real timestamps",
+          failures)
     cfgp.write_text(original)
+    return failures
+
+
+def verify_layout(tmp, pipeline_main):
+    """The newcomer layout must configure the same run as the legacy one,
+    reject typos and legacy keys, and produce only the files it names."""
+    import geopandas as gpd
+    from netCDF4 import Dataset
+    from palm2gis.config import Config, ConfigError
+
+    failures = []
+    new = tmp / "config_new.yaml"
+    new.write_text(f"""\
+project:
+    name: test
+    output_dir: ./out_new
+input:
+    static_driver: test_static
+    data_3d: test_3d
+    surface_data: test_surf
+    crs: "{CRS}"
+region:
+    height_above_highest_surface: 10
+voxel:
+    variables: [u, v, w, theta, ta]
+    netcdf:
+        file: '{{name}}_voxel.nc'
+surfaces:
+    variables: [theta_surface, t_surf]
+    all_elements_gpkg:
+        file: '{{name}}_surfaces.gpkg'
+    all_elements_fgdb:
+        file: '{{name}}_surfaces.gdb'
+    all_elements_multipatch:
+        file: '{{name}}_surfaces.shp'
+wind:
+    heights_above_surface: [2.0, 10.0]
+    netcdf:
+        file: '{{name}}_wind.nc'
+    gpkg:
+        file: '{{name}}_wind.gpkg'
+        every_nth_column: 2
+canopy:
+    lad_netcdf:
+        file: '{{name}}_lad_3d.nc'
+advanced:
+    nz: {NZ}
+    dz: {DZ}
+""")
+    old, cnew = Config(str(tmp / "config.yaml")), Config(str(new))
+    check(cnew.layout == "new" and old.layout == "legacy",
+          "layout: both layouts recognised", failures)
+    same = all(
+        {k: old[st][k] for k in keys} == {k: cnew[st][k] for k in keys}
+        for st, keys in (
+            ("domain", ("static_driver", "nz", "dz")),
+            ("bounds", ("zmax", "time_from", "time_to")),
+            ("voxel", ("file_from", "file_to", "do_velocity", "scalars",
+                       "derive_ta")),
+            ("surfaces", ("file_from", "variables", "derive_t_surf",
+                          "write_all_elements_gpkg", "write_fgdb",
+                          "write_multipatch")),
+            ("wind", ("file_from", "file_to", "grid_to", "heights_agl",
+                      "stride")),
+            ("canopy", ("write_volume",))))
+    check(same, "layout: new config translates to the legacy settings",
+          failures)
+
+    rc = pipeline_main(["-c", str(new), "--overwrite"])
+    out = tmp / "out_new"
+    names = {p.name for p in out.iterdir()
+             if p.suffix in (".nc", ".gpkg", ".gdb", ".shp")}
+    want = {"test_voxel.nc", "test_surfaces.gpkg", "test_surfaces.gdb",
+            "test_surfaces.shp", "test_wind.nc", "test_wind.gpkg",
+            "test_lad_3d.nc"}
+    check(rc == 0 and names == want,
+          f"layout: run writes exactly the named files ({sorted(names)})",
+          failures)
+    a = gpd.read_file(tmp / "out" / "test_surfaces.gpkg", layer="surfaces")
+    b = gpd.read_file(out / "test_surfaces.gpkg", layer="surfaces")
+    check(len(a) == len(b) and list(a.columns) == list(b.columns),
+          "layout: same surface layer as the legacy config", failures)
+
+    # opt-in: only the wind NetCDF, no GeoPackage - legacy validation used
+    # to demand file_to even though the stage handles this case
+    only = tmp / "config_new_only.yaml"
+    only.write_text(new.read_text()
+                    .replace("./out_new", "./out_only")
+                    .replace("file: '{name}_wind.gpkg'", "file: null")
+                    .replace("file: '{name}_surfaces.gdb'", "file: null")
+                    .replace("file: '{name}_surfaces.shp'", "file: null"))
+    rc = pipeline_main(["-c", str(only), "--stages", "wind", "surfaces"])
+    names = {p.name for p in (tmp / "out_only").iterdir()
+             if p.suffix in (".nc", ".gpkg", ".gdb", ".shp")}
+    check(rc == 0 and names == {"test_wind.nc", "test_surfaces.gpkg"},
+          f"layout: null files are skipped, NetCDF-only wind runs "
+          f"({sorted(names)})", failures)
+    with Dataset(tmp / "out_only" / "test_wind.nc") as nc:
+        check(nc["u"].dimensions == ("time", "height", "y", "x"),
+              "layout: NetCDF-only wind grid is complete", failures)
+
+    def rejects(text, expect, msg):
+        bad = tmp / "config_bad.yaml"
+        bad.write_text(text)
+        try:
+            Config(str(bad))
+            check(False, msg, failures)
+        except ConfigError as exc:
+            check(expect in str(exc), f"{msg} ({exc})", failures)
+
+    from palm2gis.layout import to_new_names
+    check(to_new_names("raise bounds.zmax, set wind.file_from") ==
+          "raise region.height_above_highest_surface, set input.data_3d"
+          and to_new_names("mybounds.zmax") == "mybounds.zmax",
+          "layout: messages use the new setting names", failures)
+
+    base = new.read_text()
+    rejects(base.replace("every_nth_column: 2", "every_nth_colum: 2"),
+            "Did you mean 'every_nth_column'",
+            "layout: a misspelt key is rejected with a suggestion")
+    rejects(base + "bounds:\n    zmax: 10\n", "old config layout",
+            "layout: a legacy block in the new layout is explained")
+    rejects(base.replace("[u, v, w, theta, ta]", "[u, v, theta]"),
+            "u, v and w together",
+            "layout: partial velocity list is rejected")
+    rejects(base.replace("[theta_surface, t_surf]", "theta_surface"),
+            "must be a list",
+            "layout: a bare name instead of a list is rejected, not split "
+            "into letters")
+    rejects(base.replace("canopy:\n", "canopy:\n    enabled: 'false'\n"),
+            "true or false", "layout: a quoted boolean is rejected")
+    rejects(base.replace("every_nth_column: 2", "every_nth_column: 0"),
+            "at least 1", "layout: every_nth_column 0 is rejected")
+    rejects(base.replace("{name}_surfaces.gdb", "{name}_surfaces"),
+            "must end in .gdb", "layout: a wrong output extension is "
+                                "rejected before anything is written")
+    rejects(base.replace("{name}_wind.nc", "{name}_voxel.nc"),
+            "would both write",
+            "config: two outputs on one path are rejected")
+
+    # air temperature alone is a valid voxel request
+    ta_only = tmp / "config_ta_only.yaml"
+    ta_only.write_text(base.replace("./out_new", "./out_ta_only")
+                       .replace("[u, v, w, theta, ta]", "[ta]"))
+    rc = pipeline_main(["-c", str(ta_only), "--stages", "voxel"])
+    with Dataset(tmp / "out_ta_only" / "test_voxel.nc") as nc:
+        check(rc == 0 and "ta" in nc.variables and "u" not in nc.variables,
+              "voxel: ta alone is accepted and written", failures)
+
+    # a sample above the file's top level is NoData, not the top value
+    high = tmp / "config_high.yaml"
+    high.write_text(base.replace("./out_new", "./out_high")
+                    .replace("[2.0, 10.0]", "[2.0, 50.0]"))
+    rc = pipeline_main(["-c", str(high), "--stages", "wind"])
+    with Dataset(tmp / "out_high" / "test_wind.nc") as nc:
+        u = nc["u"][0]
+        import numpy as _np
+        check(rc == 0 and _np.ma.getmaskarray(u[1]).all()
+              and not _np.ma.getmaskarray(u[0]).all(),
+              "wind: heights above the file's top level are NoData",
+              failures)
+    pts = gpd.read_file(tmp / "out_high" / "test_wind.gpkg", layer="wind")
+    check(pts[pts.height_agl == 50.0]["u"].isna().all(),
+          "wind: the point layer carries NULL above the top level",
+          failures)
     return failures
 
 
@@ -904,6 +1020,9 @@ def main():
 
         print("Verifying handling of a fill-only time variable ...")
         failures += verify_regressions(tmp, tmp / "out", pipeline_main)
+
+        print("Verifying the config layout ...")
+        failures += verify_layout(tmp, pipeline_main)
         failures += verify_fill_times(tmp, pipeline_main)
 
         if failures:

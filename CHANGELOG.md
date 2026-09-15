@@ -1,5 +1,78 @@
 # Changelog
 
+## 0.20.0
+
+**New config layout, written for newcomers**
+
+- Input files are named once in `input` (`static_driver`, `p3d`,
+  `data_3d`, `surface_data`, `crs`) instead of per stage.
+- `region` holds the window: `x: [from, to]`, `y`,
+  `height_above_highest_surface`, `time_from`, `time_to`.
+- Every output is its own block with a `file:` line. A filename produces
+  it; `null` or a missing block skips it. Nothing is written that the
+  config does not name, so `surfaces` no longer produces a `.shp` and a
+  `.gdb` nobody asked for. `{name}` in a filename expands to
+  `project.name`.
+- Variables are plain lists: `voxel.variables: [u, v, w, theta, ta]`
+  replaces `do_velocity` + `scalars` + `derive_ta`; `t_surf` in
+  `surfaces.variables` replaces `derive_t_surf`.
+- Rarely needed settings sit in `advanced`.
+- Unknown or misspelt settings stop the run with a suggestion, and a
+  legacy block in a new-layout file says where its keys went.
+- For a new-layout config, log and error messages use the new setting
+  names.
+
+Configs in the earlier layout still load unchanged. `template.yaml` and
+the project configs are rewritten in the new layout.
+
+**Fixed**
+
+- `wind` no longer requires the GeoPackage (`file_to`) when only the
+  gridded NetCDF (`grid_to`) is wanted.
+- Two outputs configured on the same path are rejected. A wind grid named
+  like the voxel NetCDF used to replace it, and the run reported success.
+- Wind samples above the input file's top level (a vertically cut file,
+  or a large height over a tall building) are NoData. The index was
+  clipped to the top level, so they carried wind from another height.
+- `voxel` with only `ta` (or `derive_ta` and nothing else) is accepted.
+- A surface variable missing from the file is reported before any output
+  is written, naming what the file holds, instead of a bare `KeyError`.
+- The canopy NetCDF no longer carries a `coordinates` attribute, which
+  ArcGIS rejects as auxiliary coordinates.
+- Toggling `qgis_styles` / `qgis_styles_3d` rewrites the GeoPackages whose
+  embedded styles it controls.
+- In the new layout, values of the wrong type are rejected with the
+  setting's name: a quoted `'false'` (which Python reads as true), a bare
+  name where a list is expected (which was split into single letters),
+  `every_nth_column: 0` (a division by zero at run time), a duplicated
+  variable, and an output filename with the wrong extension (a `.gdb`
+  without the extension failed only after the other surface layers were
+  written).
+
+The surfaces and canopy outputs gained an explicit-filename setting, so
+their recorded config hash changes and existing outputs are rewritten once
+on the first run.
+
+## 0.19.0
+
+**Removed: top-view raster and mesh NetCDF, walls-only GeoPackage, LAI and
+canopy height rasters**
+
+- `surfaces.write_topview_raster` (`<prefix><var>_topview.tif`),
+  `surfaces.write_topview_netcdf` (`<prefix>surface_2d.nc`),
+  `surfaces.write_walls_gpkg` (`<prefix>walls.gpkg`, a strict subset of
+  the all-elements layer) and `surfaces.wall_lines` (the `<layer>_2d`
+  plan-view traces).
+- `canopy.write_lai`, `canopy.write_canopy_height` and
+  `canopy.lad_threshold`.
+
+A config that still sets one of these loads; a key set to `true` warns
+that its output is no longer produced. `canopy.write_volume` now defaults
+to `true`, since the LAD volume is the stage's only output.
+
+Also: the dry-run plan now lists the MultiPatch, File Geodatabase and wind
+grid outputs, and `diagnose.py` no longer crashes on string columns.
+
 ## 0.18.1
 
 **Fixed: the wind grid crashed under a subdomain cut**

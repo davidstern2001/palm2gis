@@ -8,6 +8,7 @@ from pathlib import Path
 
 import yaml
 
+from .layout import LayoutError, is_new_layout, translate
 from .log import debug, get_logger, info, warning
 
 log = get_logger()
@@ -123,17 +124,6 @@ DEFAULTS = {
         "file_from": None,         # SURFACE_DATA_NETCDF*
         "prefix": "palm_",         # output name prefix
         "variables": [],           # e.g. ["theta_surface"]
-        # Topmost upward-facing element per column (ground + roofs) ->
-        # one multiband GeoTIFF per variable, band = timestep.
-        "write_topview_raster": True,
-        # The same top-view fields as a CF NetCDF, which QGIS opens as a
-        # MESH layer. MDAL reads the CF time axis natively, so the Temporal
-        # Controller works with no style sidecar and no band-to-time
-        # mapping - the reliable route for animation in QGIS. All
-        # variables share one file, as separate dataset groups.
-        "write_topview_netcdf": True,
-        # Wall elements -> vertical PolygonZ quads in a GeoPackage,
-        # long format with a `time` field (ArcGIS time slider ready).
         # ESRI MultiPatch shapefile: ArcGIS's native 3D geometry type,
         # and what a 3D Object scene layer is published from. One file,
         # all element orientations (use `orient` to filter), all
@@ -149,7 +139,6 @@ DEFAULTS = {
         # field names and NULLs.
         "fgdb_to": None,
         "write_fgdb": True,
-        "write_walls_gpkg": True,
         # Add `t_surf` - the actual SURFACE (skin) temperature - next to
         # every surface potential temperature, converted at each face's
         # own height. If PALM already writes t_surf its own value is used.
@@ -159,12 +148,6 @@ DEFAULTS = {
         # produces one. This option was called `derive_ta` up to 0.17.0,
         # which was wrong twice over; the old name still works and warns.
         "derive_t_surf": False,
-        # Vertical faces have a ZERO-AREA footprint, so the polygon layers
-        # show nothing in a 2D map view. This adds a companion "<layer>_2d"
-        # layer inside the same GeoPackage holding each wall's horizontal
-        # trace as a LineString, which IS visible and clickable in plan
-        # view. The polygons remain for 3D scenes.
-        "wall_lines": True,
         # EVERY surface element of the static driver geometry - ground,
         # roofs and all four wall orientations - as PolygonZ in one
         # GeoPackage, with an `orient` column (up / down / wall_N / wall_E
@@ -172,7 +155,8 @@ DEFAULTS = {
         # terrain). This is the complete surface-temperature picture; it is
         # also the largest output (rows = n_elements x n_times).
         "write_all_elements_gpkg": False,
-        # Layer name inside the GeoPackage (null -> "surfaces" / "walls").
+        "all_elements_to": None,   # null -> <prefix>surfaces.gpkg
+        # Layer name inside the GeoPackage (null -> "surfaces").
         "layer_name": None,
     },
     "wind": {
@@ -210,8 +194,7 @@ DEFAULTS = {
     },
     # Write QGIS style sidecars (<layer>.qml, plus an embedded style in
     # each GeoPackage) so layers open with their time settings already
-    # configured: band-to-time mapping on the rasters, the `time` field
-    # recognised on the vector layers. Harmless for ArcGIS, which ignores
+    # configured: the `time` field recognised on the vector layers. Harmless for ArcGIS, which ignores
     # them.
     "qgis_styles": True,
     # Add a 3D renderer block to the vector styles, so wall polygons and
@@ -222,8 +205,8 @@ DEFAULTS = {
     # unaffected.
     "qgis_styles_3d": True,
     # Write temperature variables (theta*, tsurf*/t_surf*, ta*) in degrees
-    # Celsius instead of kelvin, in EVERY product: voxel NetCDF, top-view
-    # GeoTIFF/mesh NetCDF, and the GeoPackage element layers. Applied at
+    # Celsius instead of kelvin, in EVERY product: voxel NetCDF and the
+    # surface element layers. Applied at
     # write time only - all physics (the Exner/ta derivation) still runs in
     # kelvin, and NoData cells keep their fill value. The `units` attribute
     # in the NetCDF outputs is set to "degC" accordingly. Inputs must stay
@@ -252,17 +235,11 @@ DEFAULTS = {
         # Where `lad` lives - the static driver, unless overridden.
         "file_from": None,
         "prefix": "palm_",
-        # LAD integrated over the column -> leaf area index [m2/m2].
-        "write_lai": True,
-        # Highest level with LAD above lad_threshold, in metres above the
-        # LOCAL terrain (a canopy height model). Derived from LAD itself,
-        # so it does not need buildings_2d.
-        "write_canopy_height": True,
-        "lad_threshold": 0.01,
         # LAD lifted from height-above-terrain onto absolute heights, as a
         # CF NetCDF: the ArcGIS voxel / QGIS mesh equivalent of what
-        # paraview_vis produced for ParaView.
-        "write_volume": False,
+        # paraview_vis produced for ParaView. The stage's only output.
+        "write_volume": True,
+        "volume_to": None,         # null -> <prefix>lad_3d.nc
     },
     "stages": list(STAGES),
 }
@@ -306,6 +283,31 @@ def _migrate_renamed_keys(user):
             block.pop(old)
 
 
+# Keys whose output was removed: {section: (key, ...)}. Ignored on load with
+# a warning, so an existing job config still runs instead of silently
+# producing less than it asks for.
+_REMOVED_KEYS = {
+    "surfaces": ("write_topview_raster", "write_topview_netcdf",
+                 "write_walls_gpkg", "wall_lines"),
+    "canopy": ("write_lai", "write_canopy_height", "lad_threshold"),
+}
+
+
+def _drop_removed_keys(user):
+    """Warn about and discard keys for outputs removed in 0.19.0."""
+    for section, keys in _REMOVED_KEYS.items():
+        block = user.get(section)
+        if not isinstance(block, dict):
+            continue
+        for key in keys:
+            if key not in block:
+                continue
+            if block.pop(key):
+                warning("config: {}.{} was removed in 0.19.0 and is "
+                        "ignored - that output is no longer produced.",
+                        section, key)
+
+
 def _deep_merge(base, override):
     out = copy.deepcopy(base)
     for k, v in (override or {}).items():
@@ -343,7 +345,7 @@ def _check_unquoted_clock(text):
     if m:
         key, val = m.group(1), m.group(2)
         raise ConfigError(
-            "bounds.{key}: {val} must be QUOTED (\"{val}\"). Unquoted, YAML "
+            "{key}: {val} must be QUOTED (\"{val}\"). Unquoted, YAML "
             "reads it as a sexagesimal number, not a clock time, and it "
             "would be taken as an offset in seconds from origin_time."
             .format(key=key, val=val))
@@ -369,7 +371,26 @@ class Config:
         user = yaml.safe_load(text) or {}
         _check_unquoted_clock(text)
 
-        _migrate_renamed_keys(user)
+        # Two layouts load: the newcomer layout (input / region / one
+        # block per output, see palm2gis.layout) is translated onto the
+        # internal settings; the legacy layout already IS those settings.
+        if is_new_layout(user):
+            try:
+                user, notes = translate(user)
+            except LayoutError as exc:
+                raise ConfigError(str(exc))
+            from .layout import to_new_names
+            from .log import set_message_names
+            set_message_names(to_new_names)
+            for note in notes:
+                info("config: {}", note)
+            self.layout = "new"
+        else:
+            from .log import set_message_names
+            set_message_names(None)
+            _migrate_renamed_keys(user)
+            _drop_removed_keys(user)
+            self.layout = "legacy"
         self._cfg = _deep_merge(DEFAULTS, user)
         root = self._cfg["project"]["root"]
         self.root = Path(root).resolve() if root else self._path.parent
@@ -574,9 +595,11 @@ class Config:
                 if not c["voxel"][key]:
                     raise ConfigError(f"voxel.{key} is required when "
                                       "voxel.enabled: true.")
-            if not c["voxel"]["do_velocity"] and not c["voxel"]["scalars"]:
+            if not (c["voxel"]["do_velocity"] or c["voxel"]["scalars"]
+                    or c["voxel"]["derive_ta"]):
                 raise ConfigError("voxel: nothing to write - enable "
-                                  "do_velocity or list scalars.")
+                                  "do_velocity or derive_ta, or list "
+                                  "scalars.")
         if c["surfaces"]["enabled"]:
             if not c["surfaces"]["file_from"]:
                 raise ConfigError("surfaces.file_from is required when "
@@ -585,10 +608,41 @@ class Config:
                 raise ConfigError("surfaces.variables must list at least "
                                   "one variable.")
         if c["wind"]["enabled"]:
-            for key in ("file_from", "file_to"):
-                if not c["wind"][key]:
-                    raise ConfigError(f"wind.{key} is required when "
-                                      "wind.enabled: true.")
-            if not c["wind"]["heights_agl"]:
+            if not c["wind"]["file_from"]:
+                raise ConfigError("wind.file_from is required when "
+                                  "wind.enabled: true.")
+            if not (c["wind"]["file_to"] or c["wind"]["grid_to"]):
+                raise ConfigError("wind: set file_to (GeoPackage), grid_to "
+                                  "(NetCDF) or both when wind.enabled: "
+                                  "true.")
+            if (not isinstance(c["wind"]["heights_agl"], (list, tuple))
+                    or not c["wind"]["heights_agl"]):
                 raise ConfigError("wind.heights_agl must list at least one "
                                   "height.")
+            for key in ("stride", "grid_stride"):
+                v = c["wind"][key]
+                if not isinstance(v, int) or isinstance(v, bool) or v < 1:
+                    raise ConfigError(f"wind.{key} must be a whole number "
+                                      f"of at least 1, got {v!r}.")
+        for key, val in (("project.overwrite", c["project"]["overwrite"]),
+                         ("celsius", c["celsius"])):
+            if not isinstance(val, bool):
+                raise ConfigError(f"{key} must be true or false (without "
+                                  f"quotes), got {val!r}.")
+
+        # Two outputs on one path: the later stage silently replaces the
+        # earlier one's file (a wind grid named like the voxel NetCDF left
+        # no voxel output at all, and the run still reported success).
+        from .pipeline import stage_outputs
+        seen = {}
+        for stage in STAGES:
+            if not c[stage]["enabled"]:
+                continue
+            for path in stage_outputs(self, stage):
+                key = str(Path(path).resolve())
+                if key in seen:
+                    raise ConfigError(
+                        "{} and {} would both write {} - give them "
+                        "different filenames.".format(seen[key], stage,
+                                                      Path(path).name))
+                seen[key] = stage

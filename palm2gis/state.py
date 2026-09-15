@@ -37,9 +37,12 @@ _STAGE_KEYS = {
     # must invalidate the products that carry derived temperatures.
     "voxel":    ("domain", "bounds", "crs", "celsius", "surface_pressure",
                  "voxel"),
+    # qgis_styles decides what goes INTO the GeoPackages (an embedded
+    # layer_styles table), so toggling it must rewrite them.
     "surfaces": ("domain", "bounds", "crs", "celsius", "surface_pressure",
-                 "surfaces"),
-    "wind":     ("domain", "bounds", "crs", "wind"),
+                 "qgis_styles", "qgis_styles_3d", "surfaces"),
+    "wind":     ("domain", "bounds", "crs", "qgis_styles", "qgis_styles_3d",
+                 "wind"),
     "canopy":   ("domain", "bounds", "crs", "canopy"),
 }
 
