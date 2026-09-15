@@ -150,7 +150,6 @@ def report_input_file(cfg, path, label):
 # ------------------------------
 def report_outputs(cfg):
     head("OUTPUT LAYERS")
-    import rasterio
     import geopandas as gpd
 
     sf = cfg["surfaces"]
@@ -174,35 +173,25 @@ def report_outputs(cfg):
                     if nc.variables[name].ndim == 4:
                         stat(name, nc.variables[name][0])
 
-    if sf["enabled"]:
-        for var in sf["variables"]:
-            p = cfg.out_path(f"{sf['prefix']}{var}_topview.tif")
-            checked.append(p)
-            if p.exists():
-                print(f"\n  {p.name}")
-                with rasterio.open(p) as r:
-                    print(f"    {r.width} x {r.height}, {r.count} bands, "
-                          f"crs {r.crs}, nodata {r.nodata}")
-                    print(f"    bounds {r.bounds}")
-                    print(f"    res {r.res}")
-                    print(f"    band descriptions[:3] {r.descriptions[:3]}")
-                    stat("band 1", r.read(1))
-        p = cfg.out_path(f"{sf['prefix']}walls.gpkg")
+    if sf["enabled"] and sf["write_all_elements_gpkg"]:
+        p = cfg.out_path(sf["all_elements_to"]
+                         or f"{sf['prefix']}surfaces.gpkg")
         checked.append(p)
         if p.exists():
-            g = gpd.read_file(p)
+            g = gpd.read_file(p, layer=sf["layer_name"] or "surfaces")
             print(f"\n  {p.name}: {len(g)} rows, crs {g.crs.to_epsg()}, "
                   f"{g['time'].nunique()} times")
             print(f"    bounds {tuple(round(v, 1) for v in g.total_bounds)}")
             for c in g.columns:
-                if c != "geometry" and np.issubdtype(g[c].dtype, np.number):
+                if (c != "geometry"
+                        and gpd.pd.api.types.is_numeric_dtype(g[c])):
                     stat(c, g[c].values)
 
-    if cfg["wind"]["enabled"]:
+    if cfg["wind"]["enabled"] and cfg["wind"]["file_to"]:
         p = cfg.out_path(cfg["wind"]["file_to"])
         checked.append(p)
         if p.exists():
-            g = gpd.read_file(p)
+            g = gpd.read_file(p, layer="wind")
             print(f"\n  {p.name}: {len(g)} rows, crs {g.crs.to_epsg()}")
             print(f"    bounds {tuple(round(v, 1) for v in g.total_bounds)}")
             for c in ("u", "v", "speed", "dir_met", "height_agl"):

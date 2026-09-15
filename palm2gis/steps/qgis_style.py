@@ -2,99 +2,34 @@
 
 QGIS applies a `<name>.qml` file sitting next to a data source when the
 layer is added, and temporal settings are part of what a QML style
-carries. This module writes those sidecars, so a multiband GeoTIFF arrives
-with its band-to-time mapping already filled in and a GeoPackage arrives
-with its `time` field already recognised - no manual Temporal tab, no
+carries. This module writes those sidecars, so a GeoPackage arrives with
+its `time` field already recognised - no manual Temporal tab, no
 expression typing.
 
-The XML follows QgsRasterLayerTemporalProperties::writeXml and
-QgsVectorLayerTemporalProperties::writeXml:
-
-  raster  <temporal enabled mode="3" bandNumber fetchMode>
-              <ranges><range band begin end .../></ranges>
-          mode 3 = FixedRangePerBand, added in QGIS 3.38 - older QGIS
-          ignores the block and simply opens the raster untimed.
+The XML follows QgsVectorLayerTemporalProperties::writeXml:
 
   vector  <temporal enabled mode="1" startField="time"
                     durationUnit fixedDuration accumulate limitMode>
           mode 1 = FeatureDateTimeInstantFromField.
 
-Rasters also get a sensible single-band pseudocolour ramp so the first
-view is not a grey blur; GeoPackages additionally get the style stored in
-the file's own `layer_styles` table, which QGIS reads in preference to a
-sidecar.
+GeoPackages additionally get the style stored in the file's own
+`layer_styles` table, which QGIS reads in preference to a sidecar.
 """
 
-import datetime
 import sqlite3
 from pathlib import Path
 from xml.sax.saxutils import escape
 
 from ..log import debug, warning
 
-QGIS_VERSION = "3.38.0"          # minimum that understands FixedRangePerBand
+QGIS_VERSION = "3.38.0"
 
 
 # ------------------------------
-# 1. RASTER: TIME RANGE PER BAND
-# ------------------------------
-def _iso(dt):
-    """ISO timestamp with an explicit UTC marker.
-
-    PALM's origin_time is UTC, so every timestamp palm2gis derives is UTC.
-    QGIS writes per-band ranges WITHOUT a timezone (unlike its other
-    temporal modes, which use an explicit offset), and a naive string is
-    read back as LOCAL time while the map's temporal range is UTC - which
-    shifts every band by the local offset and can make the layer render
-    nothing at all. The trailing Z removes the ambiguity.
-    """
-    return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
-def raster_qml(band_times, default_step_s=3600.0):
-    """QML for a multiband raster whose bands are timesteps.
-
-    band_times : list of datetime (or None) in band order.
-    Each band covers from its own time to the next one; the last band gets
-    the same span as the previous gap so it stays visible at the end of an
-    animation.
-
-    Only temporal settings are written. An incomplete renderer here can
-    leave the layer blank, and QGIS's own default (min/max stretch on the
-    data) is a better starting point than anything guessed in advance.
-    """
-    known = [(i, t) for i, t in enumerate(band_times) if t is not None]
-    if not known:
-        return None
-
-    ranges = []
-    for n, (i, t) in enumerate(known):
-        if n + 1 < len(known):
-            end = known[n + 1][1]
-        else:
-            span = ((known[n][1] - known[n - 1][1]) if n > 0
-                    else datetime.timedelta(seconds=default_step_s))
-            end = t + span
-        ranges.append(
-            '      <range band="{}" begin="{}" end="{}" '
-            'includeBeginning="1" includeEnd="0"/>'.format(
-                i + 1, _iso(t), _iso(end)))
-
-    return (
-        '<!DOCTYPE qgis PUBLIC \'http://mrcc.com/qgis.dtd\' \'SYSTEM\'>\n'
-        '<qgis version="{v}">\n'
-        '  <temporal enabled="1" mode="3" bandNumber="1" fetchMode="0">\n'
-        '    <ranges>\n{r}\n    </ranges>\n'
-        '  </temporal>\n'
-        '</qgis>\n'
-    ).format(v=QGIS_VERSION, r="\n".join(ranges))
-
-
-# ------------------------------
-# 2. VECTOR: TIME FROM A FIELD
+# 1. VECTOR: TIME FROM A FIELD
 # ------------------------------
 # ------------------------------
-# 2b. COLOUR RAMP + 3D RENDERER
+# 1b. COLOUR RAMP + 3D RENDERER
 # ------------------------------
 # One ramp definition, referenced by BOTH the 2D renderer and the 3D
 # symbol, so a layer looks the same in plan view and in a scene and
@@ -224,7 +159,7 @@ def vector_qml(field="time", duration_s=3600.0, geom="polygon",
 
 
 # ------------------------------
-# 3. WRITING SIDECARS
+# 2. WRITING SIDECARS
 # ------------------------------
 def write_sidecar(path, qml):
     """Write <path>.qml next to the data file (QGIS picks it up on add)."""

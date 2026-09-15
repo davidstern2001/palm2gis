@@ -6,11 +6,11 @@ Usage (via the root entry point):
 Stages:
     voxel     DATA_3D_NETCDF* -> CF-compliant NetCDF for the ArcGIS Pro
               Voxel Layer (destaggered u/v/w + scalars, terrain as NoData)
-    surfaces  SURFACE_DATA_NETCDF* -> top-view GeoTIFF (topmost roof/ground
-              element per column, band = timestep) + wall quads (PolygonZ)
-              in a time-enabled GeoPackage
-    wind      DATA_3D_NETCDF* -> wind vector point layer (u, v, speed,
-              dir_met) at heights above the local surface, GeoPackage
+    surfaces  SURFACE_DATA_NETCDF* -> every ground/roof/wall element as
+              time-enabled PolygonZ (GeoPackage, MultiPatch, File GDB)
+    wind      DATA_3D_NETCDF* -> wind at heights above the local surface:
+              gridded NetCDF and/or GeoPackage arrows
+    canopy    static driver LAD -> voxel NetCDF on absolute heights
 
 The static driver is read first in every run - it provides the grid, the
 georeferencing (origin_x/origin_y in crs.palm) and the bounds index ranges
@@ -58,30 +58,25 @@ def stage_outputs(cfg, stage):
     if stage == "surfaces":
         sf = cfg["surfaces"]
         out = []
-        if sf["write_topview_raster"]:
-            from .steps.surfaces import output_vars
-            # Plan only: without reading the file, assume the derived name.
-            out += [cfg.out_path("{}{}_topview.tif".format(sf["prefix"], n))
-                    for n, _v, _d in output_vars(sf)]
-        if sf["write_topview_netcdf"]:
-            out.append(cfg.out_path("{}surface_2d.nc".format(sf["prefix"])))
-        if sf["write_walls_gpkg"]:
-            out.append(cfg.out_path("{}walls.gpkg".format(sf["prefix"])))
         if sf["write_all_elements_gpkg"]:
-            out.append(cfg.out_path("{}surfaces.gpkg".format(sf["prefix"])))
+            out.append(cfg.out_path(sf["all_elements_to"]
+                                    or "{}surfaces.gpkg".format(sf["prefix"])))
+        if sf["write_multipatch"]:
+            out.append(cfg.out_path(sf["multipatch_to"]
+                                    or "{}surfaces.shp".format(sf["prefix"])))
+        if sf["write_fgdb"]:
+            out.append(cfg.out_path(sf["fgdb_to"]
+                                    or "{}surfaces.gdb".format(sf["prefix"])))
         return out
     if stage == "wind":
-        return [cfg.out_path(cfg["wind"]["file_to"])]
+        wd = cfg["wind"]
+        return [cfg.out_path(p) for p in (wd["file_to"], wd["grid_to"]) if p]
     if stage == "canopy":
         cn = cfg["canopy"]
         out = []
-        if cn["write_lai"]:
-            out.append(cfg.out_path("{}lai.tif".format(cn["prefix"])))
-        if cn["write_canopy_height"]:
-            out.append(cfg.out_path(
-                "{}canopy_height.tif".format(cn["prefix"])))
         if cn["write_volume"]:
-            out.append(cfg.out_path("{}lad_3d.nc".format(cn["prefix"])))
+            out.append(cfg.out_path(cn["volume_to"]
+                                    or "{}lad_3d.nc".format(cn["prefix"])))
         return out
     return []
 
