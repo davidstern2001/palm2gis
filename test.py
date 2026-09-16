@@ -822,6 +822,29 @@ def verify_fill_times(tmp, pipeline_main):
     return failures
 
 
+def verify_time_regularity():
+    """PALM record times carry a per-record residue (output at the first
+    timestep at or after the target). Rounded, they gave 601/599 s steps
+    that ArcGIS Pro reads as an irregular voxel time axis."""
+    import numpy as np
+    from palm2gis.steps.georef import regularize_times
+
+    failures = []
+    raw = np.array([600.4, 1200.9, 1800.2, 2400.6, 3000.51])
+    out = regularize_times(raw, range(raw.size), tag="test")
+    check(np.allclose(np.diff(out), 600.0),
+          "time: residue snapped to a regular 600 s interval", failures)
+    gap = np.array([600.4, 1200.9, 2400.6])
+    out = regularize_times(gap, range(gap.size), tag="test")
+    check(np.allclose(out, [600.0, 1200.0, 2400.0]),
+          "time: a missing record keeps the true 600 s interval", failures)
+    odd = np.array([0.0, 700.0, 1200.0, 2000.0])
+    out = regularize_times(odd, range(odd.size), tag="test")
+    check(np.allclose(out, odd),
+          "time: genuinely irregular times are left as written", failures)
+    return failures
+
+
 def verify_layout(tmp, pipeline_main):
     """The newcomer layout must configure the same run as the legacy one,
     reject typos and legacy keys, and produce only the files it names."""
@@ -1112,6 +1135,9 @@ def main():
         print("Verifying the config layout ...")
         failures += verify_layout(tmp, pipeline_main)
         failures += verify_fill_times(tmp, pipeline_main)
+
+        print("Verifying the regular time axis ...")
+        failures += verify_time_regularity()
 
         if failures:
             print(f"\nTEST FAILED: {len(failures)} check(s) failed.")

@@ -14,6 +14,16 @@
   that ArcGIS cannot read it: the global `esri_pe_string` covers it.
   Applies to the voxel, wind and canopy NetCDF outputs.
 
+**Regular time axis**
+
+- Record times are snapped to the nominal output interval. PALM writes
+  each record at the first model timestep at or after its target, so the
+  times carry a per-record residue (600.4, 1200.9, ...); rounded, that gave
+  599/601 s steps, which ArcGIS Pro reads as an irregular voxel time axis.
+  The interval comes from the p3d or the file's own spacing; times more
+  than 10 % of a step off any regular grid are left as written, with a
+  warning, and so are gaps from missing records.
+
 ## 0.21.0
 
 **Absolute humidity in the voxel output**

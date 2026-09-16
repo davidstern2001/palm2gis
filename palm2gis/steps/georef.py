@@ -636,6 +636,9 @@ def select_times(cfg, nc, tag="", grid=None, source=""):
                     "time_end" if end is not None else "n_times",
                     end if end is not None else bnd["n_times"]))
 
+    # ---- snap to the nominal output interval ----------------------------
+    times = regularize_times(times, its, grid, tag, source)
+
     # ---- report, and cross-check against the other stages ---------------
     sel_t = times[np.asarray(its)]
     span = ""
@@ -665,6 +668,94 @@ def select_times(cfg, nc, tag="", grid=None, source=""):
         _RUN_WINDOWS[tag] = (lo, hi, tag)
 
     return its, times
+
+
+# ------------------------------
+# 4c. REGULAR TIME AXIS
+# ------------------------------
+# PALM writes output at the first model timestep AT OR AFTER each target
+# time, so record times carry a residue that varies from record to record:
+# 600.4, 1200.9, 1800.2 ... Rounding to whole seconds leaves 601, 600,
+# 599 s steps, and ArcGIS Pro reads such a voxel time axis as IRREGULAR
+# (no fixed interval for the time slider). The nominal times are what the
+# run was configured to output, so the residue is snapped away.
+def regularize_times(times, its, grid=None, tag="", source=""):
+    """*times* with the selected finite records snapped to a regular grid.
+
+    The grid is `start + n * step`: the p3d output interval when the
+    namelist gives one, otherwise the median spacing of the file anchored
+    on its first record. Snapping is applied only when every selected
+    record lies within 10 % of a step (at most 60 s) of a grid point;
+    anything larger is a genuine irregularity and is left as written, with
+    a warning. Missing records (a gap of two or more steps) are warned
+    about too, since ArcGIS reads that axis as irregular as well.
+    """
+    label = "[{}] ".format(tag) if tag else ""
+    times = np.array(times, dtype="f8", copy=True)
+    idx = np.asarray(its, dtype=int)
+    if idx.size < 2:
+        return times
+    t = times[idx]
+    fin = np.isfinite(t)
+    if fin.sum() < 2:
+        return times
+    tf = t[fin]
+
+    # Candidate grids (step, start): the p3d interval, and the file's own
+    # median and smallest spacing - the latter so a missing record still
+    # resolves the true interval - each rounded to whole minutes, tens of
+    # seconds and seconds. The one that fits the records most closely wins.
+    candidates = []
+    step_p3d, start_p3d, _ = (infer_time_params(grid, tag, source)
+                              if grid is not None else (None, None, None))
+    if step_p3d:
+        candidates.append((float(step_p3d), float(start_p3d), "p3d"))
+    d = np.diff(tf)
+    if d.size and np.all(d > 0):
+        for base in (float(np.median(d)), float(d.min())):
+            for q in (60.0, 10.0, 1.0):
+                step_f = round(base / q) * q
+                if step_f > 0:
+                    candidates.append((step_f, round(tf[0] / q) * q,
+                                       "file"))
+
+    best = None
+    for step, start, origin in candidates:
+        n = np.round((tf - start) / step)
+        snapped = start + n * step
+        resid = float(np.max(np.abs(tf - snapped)))
+        if resid > min(0.1 * step, 60.0) or np.any(np.diff(n) < 1):
+            continue
+        # A residue within a couple of model timesteps is PALM's normal
+        # overshoot: take the first (roundest) such grid, so hourly output
+        # lands on 3600 s rather than 3601 s. Beyond that, the closest fit.
+        rank = 0.0 if resid <= 2.0 else resid
+        if best is None or rank < best[0]:
+            best = (rank, resid, step, origin, n, snapped)
+
+    if best is not None:
+        _, resid, step, origin, n, snapped = best
+        out = t.copy()
+        out[fin] = snapped
+        times[idx] = out
+        if resid > 0.0:
+            debug("{}record times snapped to a regular {:g} s interval "
+                  "(from the {}), residue up to {:.2f} s.",
+                  label, step, origin, resid)
+        gaps = np.flatnonzero(np.diff(n) != 1)
+        if gaps.size:
+            warning("{}{} gap(s) in the selected records (e.g. {:g} s -> "
+                    "{:g} s with a {:g} s interval): ArcGIS Pro will read "
+                    "the time axis as irregular.", label, gaps.size,
+                    snapped[gaps[0]], snapped[gaps[0] + 1], step)
+        return times
+
+    warning("{}record times are not on a regular interval (steps {:g} .. "
+            "{:g} s) and were written as they are - ArcGIS Pro will read "
+            "the time axis as irregular.", label,
+            float(d.min()) if d.size else 0.0,
+            float(d.max()) if d.size else 0.0)
+    return times
 
 
 # ------------------------------
