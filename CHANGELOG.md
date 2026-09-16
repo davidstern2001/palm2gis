@@ -14,6 +14,19 @@
   that ArcGIS cannot read it: the global `esri_pe_string` covers it.
   Applies to the voxel, wind and canopy NetCDF outputs.
 
+**Variable and field descriptions**
+
+- Every voxel variable gets a descriptive `long_name`, which ArcGIS Pro
+  shows as the Description when the voxel layer is added. PALM writes only
+  the bare name there (`theta`); unlisted variables fall back to PALM's
+  own text. The wind grid NetCDF uses the same table.
+- GeoPackage fields (surfaces, wind, wind_3d) carry an alias and a
+  description in `gpkg_data_columns`.
+- File Geodatabase fields carry an alias (written through GDAL's Arrow
+  writer; needs `pyarrow` and GDAL >= 3.8, otherwise skipped). The
+  multipatch shapefile cannot hold either.
+- One table for all of it: `palm2gis/descriptions.py`.
+
 **Regular time axis**
 
 - Record times are snapped to the nominal output interval. PALM writes

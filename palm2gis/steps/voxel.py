@@ -22,6 +22,7 @@ By default the k=0 level (z = 0) is dropped so vertical spacing is uniform
 import numpy as np
 from netCDF4 import Dataset
 
+from ..descriptions import long_name
 from ..log import debug, get_logger, info, warning
 from .georef import (check_product, check_raw_input, require_variables,
                      resolve_z_range, select_times)
@@ -450,14 +451,14 @@ def stage_voxel(cfg, grid):
                 # auxiliary variables as a multidimensional/voxel source.
                 if var == "ta" and derive_ta:
                     ov.units = "degC" if celsius else "K"
-                    ov.long_name = "air temperature"
+                    ov.long_name = long_name("ta")
                     ov.comment = ("derived from theta via a hydrostatic "
                                   "Exner profile (PALM did not output ta)")
                     ov.derived_from = "theta"
                     continue
                 if var == "ah" and derive_ah:
                     ov.units = "g m-3"
-                    ov.long_name = "absolute humidity (water vapour density)"
+                    ov.long_name = long_name("ah")
                     ov.comment = (
                         "derived as q * p / (Rd * Tv), Tv = T (1 + 0.608 q), "
                         "with T from {} and p from a hydrostatic Exner "
@@ -469,10 +470,15 @@ def stage_voxel(cfg, grid):
                     ov.derived_from = "q"
                     continue
                 src = nc.variables.get(var)
-                if src is not None:
-                    for att in ("units", "long_name"):
-                        if hasattr(src, att):
-                            ov.setncattr(att, getattr(src, att))
+                if src is not None and hasattr(src, "units"):
+                    ov.units = src.units
+                # ArcGIS Pro shows long_name as the variable Description.
+                # PALM writes only the bare name there ("theta"), so it is
+                # replaced by a real description, falling back to PALM's
+                # own text for variables the table does not list.
+                ov.long_name = long_name(
+                    var, getattr(src, "long_name", None)
+                    if src is not None else None)
                 if var in scales:
                     ov.units = "degC" if target == "C" else "K"
                     ov.palm2gis_source_units = str(

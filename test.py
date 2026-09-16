@@ -845,6 +845,62 @@ def verify_time_regularity():
     return failures
 
 
+def verify_descriptions(out):
+    """ArcGIS Pro shows a NetCDF variable's long_name as its Description;
+    GeoPackage and File Geodatabase fields carry an alias."""
+    import sqlite3
+    from netCDF4 import Dataset
+    from palm2gis.descriptions import DESCRIPTIONS
+
+    failures = []
+    with Dataset(out / "test_voxel.nc") as nc:
+        bare = [v for v in nc.variables
+                if nc[v].dimensions[:1] == ("time",) and len(nc[v].dimensions)
+                == 4 and str(getattr(nc[v], "long_name", v)) == v]
+        check(not bare, "descriptions: every voxel variable has a real "
+              "long_name{}".format(" (missing: {})".format(bare)
+                                   if bare else ""), failures)
+        check(nc["theta"].long_name == DESCRIPTIONS["theta"][1],
+              "descriptions: theta described as potential temperature",
+              failures)
+
+    con = sqlite3.connect(str(out / "test_surfaces.gpkg"))
+    rows = dict(con.execute("SELECT column_name, description FROM "
+                            "gpkg_data_columns WHERE table_name = "
+                            "'surfaces'").fetchall())
+    con.close()
+    check(rows.get("t_surf") == DESCRIPTIONS["t_surf"][1]
+          and "orient" in rows,
+          "descriptions: surfaces GeoPackage fields carry descriptions",
+          failures)
+
+    con = sqlite3.connect(str(out / "test_wind.gpkg"))
+    n = con.execute("SELECT count(*) FROM gpkg_data_columns WHERE "
+                    "table_name = 'wind' AND column_name = 'dir_met'"
+                    ).fetchone()[0]
+    con.close()
+    check(n == 1, "descriptions: wind GeoPackage fields carry descriptions",
+          failures)
+
+    try:
+        import pyarrow  # noqa: F401
+    except ImportError:
+        print("  [skip] descriptions: pyarrow not installed, no FGDB aliases")
+        return failures
+    import pyogrio
+    _meta, tbl = pyogrio.read_arrow(out / "test_surfaces.gdb",
+                                    layer="surfaces")
+    md = tbl.schema.field("t_surf").metadata or {}
+    check(md.get(b"GDAL:OGR:alternative_name")
+          == DESCRIPTIONS["t_surf"][0].encode(),
+          "descriptions: File Geodatabase fields carry aliases", failures)
+    gdb = pyogrio.read_dataframe(out / "test_surfaces.gdb", layer="surfaces")
+    check(gdb["azimuth"].isna().any() and len(gdb) == 432 * NT,
+          "descriptions: FGDB still holds every row, NULL azimuths intact",
+          failures)
+    return failures
+
+
 def verify_layout(tmp, pipeline_main):
     """The newcomer layout must configure the same run as the legacy one,
     reject typos and legacy keys, and produce only the files it names."""
@@ -1122,6 +1178,9 @@ def main():
 
         print("Verifying the outputs ...")
         failures = verify_outputs(tmp / "out")
+
+        print("Verifying variable descriptions ...")
+        failures += verify_descriptions(tmp / "out")
 
         print("Verifying the overwrite policy ...")
         failures += verify_overwrite(tmp, pipeline_main)

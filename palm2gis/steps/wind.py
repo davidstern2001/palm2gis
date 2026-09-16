@@ -19,6 +19,7 @@ from netCDF4 import Dataset
 import geopandas as gpd
 from shapely.geometry import LineString, Point
 
+from ..descriptions import long_name, write_gpkg_descriptions
 from ..log import debug, get_logger, info, warning
 from .georef import (check_product, check_raw_input, require_variables,
                      select_times)
@@ -120,7 +121,7 @@ def _wind_netcdf(cfg, grid, nc, its, times, heights, z, path):
 
         hv = fout.createVariable("height", "f8", ("height",))
         hv[:] = np.asarray(heights, dtype="f8")
-        hv.long_name = "height above local surface (terrain and buildings)"
+        hv.long_name = long_name("height_agl")
         hv.units = "m"
         hv.axis = "Z"
         hv.positive = "up"
@@ -133,25 +134,20 @@ def _wind_netcdf(cfg, grid, nc, its, times, heights, z, path):
         tv[:] = [float(times[it]) for it in its]
 
         specs = (
-            ("u", "eastward_wind", "m s-1",
-             "eastward wind component"),
-            ("v", "northward_wind", "m s-1",
-             "northward wind component"),
-            ("w", "upward_air_velocity", "m s-1",
-             "vertical wind component"),
-            ("speed", "wind_speed", "m s-1",
-             "horizontal wind speed"),
-            ("dir_met", "wind_from_direction", "degree",
-             "meteorological wind direction (0 = from N, clockwise)"),
+            ("u", "eastward_wind", "m s-1"),
+            ("v", "northward_wind", "m s-1"),
+            ("w", "upward_air_velocity", "m s-1"),
+            ("speed", "wind_speed", "m s-1"),
+            ("dir_met", "wind_from_direction", "degree"),
         )
-        for name, std, units, long_name in specs:
+        for name, std, units in specs:
             ov = fout.createVariable(name, "f4",
                                      ("time", "height", "y", "x"),
                                      fill_value=FILL, zlib=True, complevel=4)
             ov.grid_mapping = gm
             ov.standard_name = std
             ov.units = units
-            ov.long_name = long_name
+            ov.long_name = long_name(name)
         fout.variables["dir_met"].comment = (
             "Meteorological convention: the direction the wind blows FROM, "
             "measured clockwise from north. In ArcGIS Pro's vector field "
@@ -324,6 +320,10 @@ def stage_wind(cfg, grid):
                 # created (or replaced) the file for this timestep.
                 f3.to_file(file_to, layer="wind_3d", driver="GPKG",
                            mode="a")
+
+        write_gpkg_descriptions(file_to, "wind")
+        if lines_3d:
+            write_gpkg_descriptions(file_to, "wind_3d")
 
         if cfg["qgis_styles"]:
             from .surfaces import _median_step

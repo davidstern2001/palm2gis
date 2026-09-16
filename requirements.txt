@@ -5,3 +5,5 @@ pyproj>=3.4
 rasterio>=1.3
 geopandas>=1.0
 shapely>=2.0
+# optional: field aliases in the File Geodatabase (needs GDAL >= 3.8)
+pyarrow>=14

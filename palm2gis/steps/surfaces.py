@@ -24,6 +24,7 @@ import geopandas as gpd
 import pyogrio
 from shapely.geometry import MultiPolygon, Polygon
 
+from ..descriptions import write_gpkg_descriptions, write_with_aliases
 from ..log import debug, get_logger, info, warning
 from .georef import (check_product, check_raw_input, require_variables,
                      select_times)
@@ -394,8 +395,8 @@ def _elements_fgdb(cfg, grid, nc, its, times, xs, ys, zs, zen, az, idx,
         return
     for n, it, frame in _element_frames(cfg, grid, nc, its, times, xs, ys,
                                         zs, zen, az, idx):
-        pyogrio.write_dataframe(frame, path, driver="OpenFileGDB",
-                                layer=layer, append=(n > 0))
+        write_with_aliases(frame, path, "OpenFileGDB", layer,
+                           append=(n > 0))
     info("[surfaces] wrote {}: feature class '{}', {} elements x {} times",
          cfg.disp(path), layer, idx.size, len(its))
 
@@ -489,6 +490,8 @@ def _elements_gpkg(cfg, grid, nc, its, times, xs, ys, zs, zen, az, sel,
         n_written += idx.size
         debug("[surfaces] {}: timestep {}/{} written ({} rows so far)",
               cfg.disp(path), n + 1, len(its), n_written)
+
+    write_gpkg_descriptions(path, layer)
 
     qml = None
     if cfg["qgis_styles"]:
