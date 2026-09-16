@@ -271,6 +271,13 @@ def verify_outputs(out):
               "voxel: absolute x coordinates", failures)
         check("esri_pe_string" in nc["crs"].ncattrs(),
               "voxel: Esri PE string on the crs variable", failures)
+        check("esri_pe_string" in nc.ncattrs(),
+              "voxel: global Esri PE string (read by the voxel layer)",
+              failures)
+        check(all(str(nc["crs"].getncattr(a)).isascii()
+                  and "ENSEMBLE" not in str(nc["crs"].getncattr(a))
+                  for a in ("spatial_ref", "crs_wkt", "esri_pe_string")),
+              "voxel: CRS WKT attributes are ASCII WKT1", failures)
         check(nc["time"].units.startswith("seconds since 2026-07-15"),
               "voxel: CF time from origin_time", failures)
         u = nc["u"][0]

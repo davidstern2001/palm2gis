@@ -101,17 +101,14 @@ def write_crs_var(fout, crs):
         except TypeError:
             pass
 
-    # Esri's netCDF reader builds the spatial reference from
-    # grid_mapping_name and its parameters. It does NOT read crs_wkt or
-    # epsg_code, so a CRS pyproj cannot express in CF (Krovak /
-    # S-JTSK EPSG:5514, for one) leaves ArcGIS with nothing to work from.
+    # CF-only readers build the spatial reference from grid_mapping_name
+    # and its parameters. A CRS pyproj cannot express in CF (Krovak /
+    # S-JTSK EPSG:5514, for one) has none; ArcGIS still gets it from the
+    # global esri_pe_string written below.
     if "grid_mapping_name" not in cf:
-        warning("[crs] {} has no CF grid mapping - pyproj cannot express "
-                "it as one. GDAL and QGIS will read the WKT, but ArcGIS "
-                "reads grid_mapping_name and will treat this file as "
-                "having an unknown CRS. Reproject to a CRS with a CF "
-                "grid mapping (e.g. UTM) if the output is for ArcGIS.",
-                crs.name)
+        info("[crs] {} has no CF grid mapping - CF-only readers will not "
+             "recognise it; ArcGIS reads the global esri_pe_string and "
+             "GDAL/QGIS read spatial_ref.", crs.name)
 
     # Esri also assumes the WGS 1984 datum for netCDF regardless of what
     # the file says, so a non-WGS84 datum silently shifts the data.
@@ -125,10 +122,31 @@ def write_crs_var(fout, crs):
         warning("[crs] datum is '{}', not WGS 84. ArcGIS assumes WGS 1984 "
                 "for netCDF whatever the file declares, so expect a datum "
                 "shift when this is opened in ArcGIS Pro.", datum)
-    cv.spatial_ref = crs.to_wkt()
-    cv.crs_wkt = crs.to_wkt()
-    cv.esri_pe_string = crs.to_wkt(version="WKT1_ESRI")
+    # Every WKT is written as ASCII WKT1, which netCDF stores as a classic
+    # char attribute. pyproj's default WKT2 carries a USAGE block with a
+    # non-ASCII degree sign, so netCDF4 stored it as NC_STRING; together
+    # with the WKT2-only ENSEMBLE node that left ArcGIS Pro parsing
+    # spatial_ref into an unknown CRS (WKID 0) and reporting it unsupported.
+    wkt_esri = _ascii_wkt(crs, "WKT1_ESRI")
+    wkt_gdal = _ascii_wkt(crs, "WKT1_GDAL") or wkt_esri
+    cv.spatial_ref = wkt_gdal
+    cv.crs_wkt = wkt_gdal
+    cv.esri_pe_string = wkt_esri
+    # The voxel layer reads esri_pe_string as a GLOBAL attribute; on the
+    # grid_mapping variable alone it is not seen.
+    fout.setncattr("esri_pe_string", wkt_esri)
     return "crs"
+
+
+def _ascii_wkt(crs, version):
+    """WKT of *crs* in *version*, ASCII only (stored as NC_CHAR)."""
+    try:
+        wkt = crs.to_wkt(version=version)
+    except Exception:
+        return None
+    if not wkt:
+        return None
+    return wkt.encode("ascii", "ignore").decode("ascii")
 
 
 # ------------------------------

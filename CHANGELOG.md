@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+**ArcGIS Pro voxel layer: CRS no longer "unsupported (0)"**
+
+- `esri_pe_string` is now also written as a GLOBAL attribute, which is
+  where the voxel layer reads the coordinate system from.
+- `spatial_ref` and `crs_wkt` are ASCII WKT1 (GDAL flavour) instead of
+  pyproj's WKT2. The WKT2 carried a non-ASCII degree sign, so it was stored
+  as NC_STRING, and its `ENSEMBLE` datum node is WKT2-only; ArcGIS Pro
+  parsed it into WKID 0.
+- A CRS with no CF grid mapping (S-JTSK Krovak, EPSG:5514) no longer warns
+  that ArcGIS cannot read it: the global `esri_pe_string` covers it.
+  Applies to the voxel, wind and canopy NetCDF outputs.
+
 ## 0.21.0
 
 **Absolute humidity in the voxel output**

@@ -186,7 +186,7 @@ Quote clock times. Unquoted, YAML 1.1 reads `13:00` as the sexagesimal number 78
 
 ### voxel — the 3D volume in ArcGIS Pro
 
-The 3D output is destaggered onto scalar mass centres (`u` averaged over the two x-faces, `v` over the y-faces, `w` over the z-faces), cut by `region`, and written with everything a voxel layer needs: `(time, z, y, x)` dimension order, absolute `x`/`y` with CF standard names, a `crs` grid-mapping variable carrying both the OGC WKT and an Esri PE string, and CF time (`seconds since <origin_time>`). Cells inside terrain or buildings carry the `_FillValue` and render as empty space. With `advanced.voxel_drop_k0: true` (default) the z = 0 level is dropped, making the vertical spacing uniform (`dz/2, 3dz/2, …`), which voxel layers handle best.
+The 3D output is destaggered onto scalar mass centres (`u` averaged over the two x-faces, `v` over the y-faces, `w` over the z-faces), cut by `region`, and written with everything a voxel layer needs: `(time, z, y, x)` dimension order, absolute `x`/`y` with CF standard names, a `crs` grid-mapping variable carrying ASCII WKT1 (`spatial_ref`, `crs_wkt`) and an Esri PE string, plus the Esri PE string as a global attribute (where the voxel layer reads it), and CF time (`seconds since <origin_time>`). Cells inside terrain or buildings carry the `_FillValue` and render as empty space. With `advanced.voxel_drop_k0: true` (default) the z = 0 level is dropped, making the vertical spacing uniform (`dz/2, 3dz/2, …`), which voxel layers handle best.
 
 ### Which PALM file goes where
 
