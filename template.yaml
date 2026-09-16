@@ -93,6 +93,8 @@ voxel:
     # derived from theta (which then must be in the file).
     # ah is PALM's own absolute humidity [g/m3] if the file has it,
     # otherwise derived from q (which then must be in the file).
+    # speed_3d is the 3D wind speed sqrt(u^2+v^2+w^2) [m/s] at cell
+    # centres; needs u, v, w in the file, but they need not be listed.
     variables: [u, v, w, theta]
 
     netcdf:

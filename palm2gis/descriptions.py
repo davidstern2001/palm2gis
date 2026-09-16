@@ -56,6 +56,9 @@ DESCRIPTIONS = {
           "reference)"),
     "e": ("Subgrid TKE", "subgrid-scale turbulent kinetic energy"),
     "s": ("Passive scalar", "passive scalar concentration"),
+    "speed_3d": ("Wind speed (3D)",
+                 "3D wind speed, sqrt(u^2 + v^2 + w^2), from the components "
+                 "interpolated to cell centres"),
     "wspeed": ("Wind speed", "horizontal wind speed"),
     "wdir": ("Wind direction", "wind direction"),
     "lad": ("Leaf area density", "leaf area density of the plant canopy"),

@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.23.0
+
+**3D wind speed in the voxel output**
+
+`speed_3d` in `voxel.variables` (legacy layout: `voxel.derive_speed_3d:
+true`) adds `sqrt(u^2 + v^2 + w^2)` in m s-1 from the components
+destaggered to cell centres, NoData in terrain and buildings. Requires
+`u`, `v`, `w` in the file; they are written only if also listed. The
+components are destaggered once per record and shared.
+
 ## 0.22.0
 
 **Derived `ta` / `t_surface` / `ah` use PALM's own basic state**

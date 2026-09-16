@@ -290,8 +290,10 @@ def translate(user):
             "enabled": True, "file_from": data_3d, "file_to": vx_file,
             "do_velocity": bool(vel), "derive_ta": "ta" in variables,
             "derive_ah": "ah" in variables,
+            "derive_speed_3d": "speed_3d" in variables,
             "scalars": [v for v in variables
-                        if v not in VELOCITY and v not in ("ta", "ah")],
+                        if v not in VELOCITY
+                        and v not in ("ta", "ah", "speed_3d")],
         }
         _set(out, "voxel", "drop_k0",
              _bool(adv.get("voxel_drop_k0"), "advanced.voxel_drop_k0"))
@@ -434,6 +436,7 @@ MESSAGE_NAMES = {
     "derive_ta is on": "ta is listed",
     "derive_t_surface is on": "t_surface is listed",
     "derive_ah is on": "ah is listed",
+    "derive_speed_3d is on": "speed_3d is listed",
     "voxel.file_from": "input.data_3d",
     "wind.file_from": "input.data_3d",
     "surfaces.file_from": "input.surface_data",

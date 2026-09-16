@@ -129,6 +129,11 @@ DEFAULTS = {
         # (or from theta, as for derive_ta) and p from the same basic
         # state. Requires q.
         "derive_ah": False,
+        # Write `speed_3d` - the full 3D wind speed sqrt(u^2 + v^2 + w^2)
+        # from the components destaggered to cell centres. Needs u, v and w
+        # in the file; they are written only if do_velocity is also on.
+        # Not the wind stage's `speed`, which is horizontal.
+        "derive_speed_3d": False,
     },
     "surfaces": {
         "enabled": False,
@@ -590,9 +595,11 @@ class Config:
                     raise ConfigError(f"voxel.{key} is required when "
                                       "voxel.enabled: true.")
             if not (c["voxel"]["do_velocity"] or c["voxel"]["scalars"]
-                    or c["voxel"]["derive_ta"] or c["voxel"]["derive_ah"]):
+                    or c["voxel"]["derive_ta"] or c["voxel"]["derive_ah"]
+                    or c["voxel"]["derive_speed_3d"]):
                 raise ConfigError("voxel: nothing to write - enable "
-                                  "do_velocity, derive_ta or derive_ah, "
+                                  "do_velocity, derive_ta, derive_ah or "
+                                  "derive_speed_3d, "
                                   "or list scalars.")
         if c["surfaces"]["enabled"]:
             if not c["surfaces"]["file_from"]:

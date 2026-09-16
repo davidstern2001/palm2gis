@@ -1240,6 +1240,40 @@ advanced:
         check(rc == 0 and "ta" in nc.variables and "u" not in nc.variables,
               "voxel: ta alone is accepted and written", failures)
 
+    # 3D wind speed: with the components, and on its own
+    sp_cfg = tmp / "config_speed.yaml"
+    sp_cfg.write_text(base.replace("./out_new", "./out_speed")
+                      .replace("[u, v, w, theta, ta]", "[u, v, w, speed_3d]"))
+    rc = pipeline_main(["-c", str(sp_cfg), "--stages", "voxel"])
+    with Dataset(tmp / "out_speed" / "test_voxel.nc") as nc:
+        import numpy as _np
+        sp = nc["speed_3d"][:].astype("f8")
+        uu, vv, ww = (nc[c][:].astype("f8") for c in ("u", "v", "w"))
+        ok = ~_np.ma.getmaskarray(sp)
+        want = _np.sqrt(uu ** 2 + vv ** 2 + ww ** 2)
+        err = float(_np.max(_np.abs(sp[ok] - want[ok])))
+        check(rc == 0 and ok.any() and err < 1.0e-4
+              and float(_np.abs(ww[ok]).max()) > 0.0
+              and nc["speed_3d"].units == "m s-1"
+              and bool((_np.ma.getmaskarray(uu) == ~ok).all()),
+              f"voxel: speed_3d = sqrt(u^2+v^2+w^2), max error {err:.2e}, "
+              "same NoData as u", failures)
+    sp_only = tmp / "config_speed_only.yaml"
+    sp_only.write_text(sp_cfg.read_text().replace("./out_speed",
+                                                  "./out_speed_only")
+                       .replace("[u, v, w, speed_3d]", "[speed_3d]"))
+    rc = pipeline_main(["-c", str(sp_only), "--stages", "voxel"])
+    with Dataset(tmp / "out_speed_only" / "test_voxel.nc") as nc, \
+            Dataset(tmp / "out_speed" / "test_voxel.nc") as ref:
+        check(rc == 0 and "u" not in nc.variables
+              and _np.ma.allclose(nc["speed_3d"][:], ref["speed_3d"][:]),
+              "voxel: speed_3d alone is written without u, v, w", failures)
+    old_sp = Config(str(sp_only))
+    check(old_sp["voxel"]["derive_speed_3d"] is True
+          and "speed_3d" not in old_sp["voxel"]["scalars"]
+          and old_sp["voxel"]["do_velocity"] is False,
+          "layout: speed_3d maps to derive_speed_3d", failures)
+
     # a sample above the file's top level is NoData, not the top value
     high = tmp / "config_high.yaml"
     high.write_text(base.replace("./out_new", "./out_high")

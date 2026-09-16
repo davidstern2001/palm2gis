@@ -15,6 +15,9 @@ NOTE on the original code: operation_3d.py averaged staggered components as
 against everything, so every u value was averaged with the domain-edge
 column instead of its neighbour. Fixed here (`:-1` + `1:`).
 
+Optionally writes `speed_3d`, the full 3D wind speed sqrt(u^2 + v^2 + w^2)
+of the destaggered components (voxel.derive_speed_3d).
+
 By default the k=0 level (z = 0) is dropped so vertical spacing is uniform
 (dz/2, 3dz/2, ...), which voxel layers handle best (voxel.drop_k0).
 """
@@ -241,11 +244,18 @@ def stage_voxel(cfg, grid):
                     hint="Absolute humidity needs an air temperature: "
                          "PALM's ta, or theta to derive it from.")
         do_velocity = bool(vx["do_velocity"])
+        derive_speed = bool(vx["derive_speed_3d"])
+        need_uvw = do_velocity or derive_speed
         if do_velocity:
             require_variables(
                 nc, ["u", "v", "w"], "voxel", vx["file_from"],
                 hint="Set voxel.do_velocity: false to write scalars only, "
                      "or point file_from at the joined file.")
+        if derive_speed:
+            require_variables(
+                nc, ["u", "v", "w"], "voxel", vx["file_from"],
+                hint="speed_3d is computed from u, v and w. Point file_from "
+                     "at a file holding all three, or drop speed_3d.")
         require_variables(nc, [v for v in scalars if v != "ta"], "voxel",
                           vx["file_from"],
                           hint="Adjust voxel.scalars to what this file "
@@ -257,7 +267,7 @@ def stage_voxel(cfg, grid):
         # file could arrive with zu_3d and zw_3d of different lengths and
         # the terrain mask then failed with a bare numpy boolean-index
         # error deep in the write loop.
-        if do_velocity and "zw_3d" in nc.variables:
+        if need_uvw and "zw_3d" in nc.variables:
             n_zu = nc.variables["zu_3d"].size
             n_zw = nc.variables["zw_3d"].size
             if n_zu != n_zw:
@@ -273,6 +283,8 @@ def stage_voxel(cfg, grid):
             out_vars = out_vars + ["ta"]
         if derive_ah:
             out_vars = out_vars + ["ah"]
+        if derive_speed:
+            out_vars = out_vars + ["speed_3d"]
 
         with cfg.atomic_output(file_to, "voxel") as _tmp_out, \
                 Dataset(_tmp_out, "w", format="NETCDF4") as fout:
@@ -394,6 +406,14 @@ def stage_voxel(cfg, grid):
                         cfg["surface_pressure"])
                     ov.palm2gis_pt_surface = float(cfg["pt_surface"])
                     continue
+                if var == "speed_3d" and derive_speed:
+                    # No CF standard_name: CF's wind_speed is horizontal.
+                    ov.units = "m s-1"
+                    ov.long_name = long_name("speed_3d")
+                    ov.comment = ("sqrt(u^2 + v^2 + w^2) of u, v, w "
+                                  "interpolated to cell centres")
+                    ov.derived_from = "u v w"
+                    continue
                 if var == "ah" and derive_ah:
                     ov.units = "g m-3"
                     ov.long_name = long_name("ah")
@@ -442,13 +462,22 @@ def stage_voxel(cfg, grid):
 
             for q, it in enumerate(its):
                 debug("[voxel] time {} ({:.0f} s)", it, times[it])
-                if vx["do_velocity"]:
-                    for var in ("u", "v", "w"):
-                        val = destagger(nc, var, it, kz0, kzmax,
-                                        grid.ny0, grid.nymax,
-                                        grid.nx0, grid.nxmax)
-                        val[terrain_mask] = FILL
-                        fout.variables[var][q, ...] = val
+                if need_uvw:
+                    # Destaggered once, shared by u/v/w and speed_3d.
+                    comp = {var: destagger(nc, var, it, kz0, kzmax,
+                                           grid.ny0, grid.nymax,
+                                           grid.nx0, grid.nxmax)
+                            for var in ("u", "v", "w")}
+                    if derive_speed:
+                        sp = np.sqrt(comp["u"] ** 2 + comp["v"] ** 2
+                                     + comp["w"] ** 2)
+                        sp[terrain_mask] = FILL
+                        fout.variables["speed_3d"][q, ...] = sp
+                    if do_velocity:
+                        for var in ("u", "v", "w"):
+                            val = comp[var]
+                            val[terrain_mask] = FILL
+                            fout.variables[var][q, ...] = val
                 for var in scalars:
                     val = np.ma.filled(
                         nc.variables[var][it, kz0:kzmax,
