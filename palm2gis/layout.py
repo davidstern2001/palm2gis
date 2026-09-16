@@ -25,8 +25,8 @@ _OUT_FILE = {"file": None}
 SCHEMA = {
     "project": {"name": None, "root": None, "output_dir": None,
                 "overwrite": None},
-    "input": {"static_driver": None, "p3d": None, "data_3d": None,
-              "surface_data": None, "crs": None},
+    "input": {"static_driver": None, "p3d": None, "dynamic_driver": None,
+              "data_3d": None, "surface_data": None, "crs": None},
     "region": {"x": None, "y": None, "height_above_highest_surface": None,
                "time_from": None, "time_to": None},
     "celsius": None,
@@ -43,6 +43,7 @@ SCHEMA = {
     "canopy": {"enabled": None, "lad_netcdf": _OUT_FILE},
     "advanced": {"nz": None, "dz": None, "origin_time": None,
                  "origin_z": None, "surface_pressure": None,
+                 "pt_surface": None,
                  "temperature_units": None, "qgis_styles": None,
                  "qgis_styles_3d": None, "voxel_drop_k0": None,
                  "multipatch_split": None, "canopy_file_from": None,
@@ -58,6 +59,7 @@ _LEGACY_HINT = {
     "crs": "input.crs",
     "stages": "advanced.stages",
     "surface_pressure": "advanced.surface_pressure",
+    "pt_surface": "advanced.pt_surface",
     "temperature_units": "advanced.temperature_units",
     "qgis_styles": "advanced.qgis_styles",
     "qgis_styles_3d": "advanced.qgis_styles_3d",
@@ -225,6 +227,7 @@ def translate(user):
         raise LayoutError("input.static_driver is required.")
     _set(out, "domain", "static_driver", inp.get("static_driver"))
     _set(out, "domain", "p3d", inp.get("p3d"))
+    _set(out, "domain", "dynamic_driver", inp.get("dynamic_driver"))
     _set(out, "crs", "palm", inp.get("crs"))
     _number(adv.get("nz"), "advanced.nz", 1, integer=True)
     _number(adv.get("dz"), "advanced.dz", 0)
@@ -256,7 +259,9 @@ def translate(user):
     _bool(adv.get("qgis_styles"), "advanced.qgis_styles")
     _bool(adv.get("qgis_styles_3d"), "advanced.qgis_styles_3d")
     _number(adv.get("surface_pressure"), "advanced.surface_pressure", 1)
-    for key in ("surface_pressure", "temperature_units", "qgis_styles",
+    _number(adv.get("pt_surface"), "advanced.pt_surface", 1)
+    for key in ("surface_pressure", "pt_surface", "temperature_units",
+                "qgis_styles",
                 "qgis_styles_3d"):
         if adv.get(key) is not None:
             out[key] = adv[key]
@@ -305,19 +310,26 @@ def translate(user):
         variables = _names(sf.get("variables"), "surfaces.variables")
         if not variables:
             raise LayoutError("surfaces.variables must list at least one "
-                              "variable, e.g. [theta_surface, t_surf].")
+                              "variable, e.g. [theta_surface, t_surface].")
         if not inp.get("surface_data"):
             raise LayoutError("surfaces needs input.surface_data.")
-        others = [v for v in variables if v != "t_surf"]
-        # t_surf next to another variable means "ensure it": PALM's own if
-        # the file has it, derived from the potential temperature if not.
-        # Listed alone it can only be PALM's own.
-        derive = "t_surf" in variables and bool(others)
+        if "t_surf" in variables:
+            notes.append("surfaces.variables: 't_surf' is now written as "
+                         "'t_surface' (matching theta_surface) - rename it "
+                         "in the config.")
+            variables = ["t_surface" if v == "t_surf" else v
+                         for v in variables]
+            variables = list(dict.fromkeys(variables))
+        others = [v for v in variables if v != "t_surface"]
+        # t_surface next to another variable means "ensure it": PALM's own
+        # if the file has it, derived from the potential temperature if
+        # not. Listed alone it can only be PALM's own.
+        derive = "t_surface" in variables and bool(others)
         out["surfaces"] = {
             "enabled": True, "file_from": inp["surface_data"],
             "prefix": prefix,
             "variables": others if derive else variables,
-            "derive_t_surf": derive,
+            "derive_t_surface": derive,
             "write_all_elements_gpkg": bool(sf_files["all_elements_gpkg"]),
             "all_elements_to": sf_files["all_elements_gpkg"],
             "write_fgdb": bool(sf_files["all_elements_fgdb"]),
@@ -410,6 +422,7 @@ MESSAGE_NAMES = {
     "bounds cut": "region window",
     "domain.static_driver": "input.static_driver",
     "domain.p3d": "input.p3d",
+    "domain.dynamic_driver": "input.dynamic_driver",
     "domain.nz": "advanced.nz", "domain.dz": "advanced.dz",
     "domain.origin_time": "advanced.origin_time",
     "domain.origin_z": "advanced.origin_z",
@@ -419,7 +432,7 @@ MESSAGE_NAMES = {
         "Remove u, v and w from voxel.variables to write scalars only",
     "voxel.scalars": "voxel.variables",
     "derive_ta is on": "ta is listed",
-    "derive_t_surf is on": "t_surf is listed",
+    "derive_t_surface is on": "t_surface is listed",
     "derive_ah is on": "ah is listed",
     "voxel.file_from": "input.data_3d",
     "wind.file_from": "input.data_3d",

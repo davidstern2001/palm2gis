@@ -76,7 +76,7 @@ DESCRIPTIONS = {
                    "buildings)"),
 
     # -- surface output (surfaces stage) -----------------------------------
-    "t_surf": ("Surface temperature", "surface (skin) temperature"),
+    "t_surface": ("Surface temperature", "surface (skin) temperature"),
     "theta_surface": ("Surface pot. temperature",
                       "surface potential temperature"),
     "theta_surf": ("Surface pot. temperature",

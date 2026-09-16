@@ -224,7 +224,7 @@ surfaces:
   file_from: test_surf
   prefix: test_
   variables: ["theta_surface"]
-  derive_t_surf: true
+  derive_t_surface: true
   write_all_elements_gpkg: true
 canopy:
   enabled: true
@@ -288,35 +288,39 @@ def verify_outputs(out):
               failures)
 
     # -- derived air temperature -------------------------------------------
-    # Exact analytic check: with theta constant, T must fall at g/cp.
-    from palm2gis.steps.thermo import (CP, G, exner_profile, theta_to_ta)
+    # PALM's basic state: Pi linear in z, (p_s/p0)^kappa at z = 0, slope
+    # -g/(cp theta_ref), so T of a constant-theta_ref column falls at g/cp.
+    from palm2gis.steps.thermo import (CP, G, exner_basic_state,
+                                       fit_basic_state, theta_to_ta)
     zz = _np_thermo.arange(0.0, 1001.0, 50.0)
-    th_const = _np_thermo.full_like(zz, 300.0)
-    T = theta_to_ta(th_const, exner_profile(zz, th_const, p_surface=1.0e5))
+    pi_bs = exner_basic_state(zz, 1.0e5, 300.0)
+    T = theta_to_ta(_np_thermo.full_like(zz, 300.0), pi_bs)
     lapse = (T[0] - T[-1]) / (zz[-1] - zz[0])
     check(abs(lapse - G / CP) < 1e-9,
           f"thermo: dry adiabatic lapse rate {lapse * 1000:.3f} K/km "
           f"= g/cp", failures)
-    check(abs(exner_profile(zz, th_const, p_surface=1.0e5)[0] - 1.0) < 1e-12,
+    check(abs(pi_bs[0] - 1.0) < 1e-12,
           "thermo: Exner = 1 at the reference pressure", failures)
-
-    # p_surface applies at z = 0, not at the lowest OUTPUT level: a profile
-    # over a cut starting at 100 m must agree with the full-column one there,
-    # not repeat the surface value. Up to 0.12.0 the whole column was offset
-    # by g/cp * z[0] - 1 K for this cut.
+    # anchored at z = 0: a cut starting at 100 m gives the full column's
+    # values there, not the surface value again
     cut = _np_thermo.arange(100.0, 1001.0, 50.0)
-    pi_cut = exner_profile(cut, _np_thermo.full_like(cut, 300.0),
-                           p_surface=1.0e5)
-    pi_full = exner_profile(zz, th_const, p_surface=1.0e5)
-    check(abs(pi_cut[0] - pi_full[2]) < 1e-12,
-          "thermo: Exner profile is anchored at z = 0, not at the cut base",
+    check(abs(exner_basic_state(cut, 1.0e5, 300.0)[0] - pi_bs[2]) < 1e-12,
+          "thermo: Exner anchored at z = 0, not at the cut base", failures)
+    # the fit recovers the basic state of the real holesovice parent run
+    pi_real = exner_basic_state(zz, 99388.42, 285.0)
+    fit = fit_basic_state(zz, pi_real)
+    check(fit is not None and abs(fit[0] - 99388.42) < 0.01
+          and abs(fit[1] - 285.0) < 1e-6 and fit[2] < 1e-9,
+          "thermo: fit_basic_state recovers p_s and pt_surface", failures)
+    check(fit_basic_state(zz, _np_thermo.full_like(zz, 1.0)) is None,
+          "thermo: a flat Exner profile is not accepted as a basic state",
           failures)
 
     # derived temperature must reach the surface element layer
     allel_ta = gpd.read_file(out / "test_surfaces.gpkg", layer="surfaces")
-    check("t_surf" in allel_ta.columns
-          and (allel_ta["t_surf"] > allel_ta["theta_surface"]).all(),
-          "thermo: t_surf in the element layer (p_s > p0 -> T > theta)",
+    check("t_surface" in allel_ta.columns and "t_surf" not in allel_ta.columns
+          and (allel_ta["t_surface"] > allel_ta["theta_surface"]).all(),
+          "thermo: t_surface in the element layer (p_s > p0 -> T > theta)",
           failures)
     with Dataset(out / "test_voxel.nc") as nc:
         check("ta" in nc.variables
@@ -326,16 +330,20 @@ def verify_outputs(out):
 
     # PALM's own variables must WIN over derivation
     from palm2gis.steps.surfaces import output_vars
-    sf_native = {"variables": ["theta_surface"], "derive_t_surf": True}
+    sf_native = {"variables": ["theta_surface"], "derive_t_surface": True}
+    plan = output_vars(sf_native, {"theta_surface", "t_surface"})
+    check(("t_surface", "t_surface", False) in plan,
+          "thermo: native t_surface preferred over deriving it", failures)
     plan = output_vars(sf_native, {"theta_surface", "t_surf"})
-    check(("t_surf", "t_surf", False) in plan,
-          "thermo: native t_surf preferred over deriving it", failures)
+    check(("t_surface", "t_surf", False) in plan,
+          "thermo: a native t_surf is copied and written as t_surface",
+          failures)
     plan = output_vars(sf_native, {"theta_surface"})
-    check(("t_surf", "theta_surface", True) in plan,
-          "thermo: t_surf derived when the file lacks it", failures)
-    plan = output_vars({"variables": ["theta_surf"], "derive_t_surf": True},
-                       {"theta_surf"})
-    check(("t_surf", "theta_surf", True) in plan,
+    check(("t_surface", "theta_surface", True) in plan,
+          "thermo: t_surface derived when the file lacks it", failures)
+    plan = output_vars({"variables": ["theta_surf"],
+                        "derive_t_surface": True}, {"theta_surf"})
+    check(("t_surface", "theta_surf", True) in plan,
           "thermo: the theta_surf spelling is accepted too", failures)
 
     # -- surfaces ----------------------------------------------------------
@@ -869,7 +877,7 @@ def verify_descriptions(out):
                             "gpkg_data_columns WHERE table_name = "
                             "'surfaces'").fetchall())
     con.close()
-    check(rows.get("t_surf") == DESCRIPTIONS["t_surf"][1]
+    check(rows.get("t_surface") == DESCRIPTIONS["t_surface"][1]
           and "orient" in rows,
           "descriptions: surfaces GeoPackage fields carry descriptions",
           failures)
@@ -890,13 +898,127 @@ def verify_descriptions(out):
     import pyogrio
     _meta, tbl = pyogrio.read_arrow(out / "test_surfaces.gdb",
                                     layer="surfaces")
-    md = tbl.schema.field("t_surf").metadata or {}
+    md = tbl.schema.field("t_surface").metadata or {}
     check(md.get(b"GDAL:OGR:alternative_name")
-          == DESCRIPTIONS["t_surf"][0].encode(),
+          == DESCRIPTIONS["t_surface"][0].encode(),
           "descriptions: File Geodatabase fields carry aliases", failures)
     gdb = pyogrio.read_dataframe(out / "test_surfaces.gdb", layer="surfaces")
     check(gdb["azimuth"].isna().any() and len(gdb) == 432 * NT,
           "descriptions: FGDB still holds every row, NULL azimuths intact",
+          failures)
+    return failures
+
+
+def verify_basic_state(tmp):
+    """PALM basic state (surface_pressure, pt_surface) per domain.
+
+    Mirrors what real output showed (holesovice_stern_adapt): the root
+    domain runs with the dynamic driver's first surface pressure, a nested
+    child with the PARENT p3d's surface_pressure, both with pt_surface; and
+    ta / theta, when present, is PALM's exact Exner function.
+    """
+    import shutil as _sh
+    import numpy as _np
+    from netCDF4 import Dataset
+    from palm2gis.config import Config
+    from palm2gis.steps.georef import process_static_driver
+    from palm2gis.steps.thermo import exner_basic_state
+
+    failures = []
+    base = (tmp / "config.yaml").read_text()
+    grid_lines = "  nz: {}\n  dz: {}".format(NZ, DZ)
+
+    (tmp / "bs_p3d").write_text(
+        " &initialization_parameters\n"
+        "    nz = {}, dz = {},\n"
+        "    surface_pressure = 1000.,\n"
+        "    pt_surface = 285.,\n /\n".format(NZ, DZ))
+    (tmp / "bs_p3d_N02").write_text(
+        " &initialization_parameters\n"
+        "    nz = {}, dz = {},\n /\n".format(NZ, DZ))
+
+    def run(name, p3d, extra="", data_3d="test_3d"):
+        cfgp = tmp / name
+        cfgp.write_text(
+            base.replace(grid_lines, "  p3d: " + p3d)
+            .replace("file_from: test_3d", "file_from: " + data_3d) + extra)
+        cfg = Config(cfgp)
+        process_static_driver(cfg)
+        return cfg["surface_pressure"], cfg["pt_surface"]
+
+    # child without its own surface_pressure -> parent p3d, not 1013.25
+    p_s, th = run("config_bs_child.yaml", "bs_p3d_N02")
+    check(abs(p_s - 1.0e5) < 1e-6 and abs(th - 285.0) < 1e-9,
+          f"basic state: child inherits the parent p3d ({p_s / 100:.2f} "
+          f"hPa, {th:.1f} K)", failures)
+
+    # root without a dynamic driver -> its own p3d
+    p_s, th = run("config_bs_root.yaml", "bs_p3d")
+    check(abs(p_s - 1.0e5) < 1e-6 and abs(th - 285.0) < 1e-9,
+          "basic state: root domain reads its own p3d", failures)
+
+    # root with <job>_dynamic next to the p3d -> first driver value wins
+    with Dataset(tmp / "bs_dynamic", "w") as nc:
+        nc.createDimension("time", 3)
+        v = nc.createVariable("surface_forcing_surface_pressure", "f4",
+                              ("time",), fill_value=-9999.0)
+        v[:] = [99388.42, 99394.99, 98566.35]
+    p_s, th = run("config_bs_dyn.yaml", "bs_p3d")
+    check(abs(p_s - 99388.42) < 0.01 and abs(th - 285.0) < 1e-9,
+          f"basic state: root domain takes the dynamic driver's first "
+          f"surface pressure ({p_s / 100:.2f} hPa)", failures)
+    # ... but a child never does
+    p_s, _ = run("config_bs_child2.yaml", "bs_p3d_N02")
+    check(abs(p_s - 1.0e5) < 1e-6,
+          "basic state: a child ignores the root's dynamic driver", failures)
+    (tmp / "bs_dynamic").unlink()
+
+    # ta / theta consistent with 993.88 hPa while the p3d says 1000:
+    # the fit replaces the namelist value
+    _sh.copy(tmp / "test_3d", tmp / "test_3d_bs")
+    with Dataset(tmp / "test_3d_bs", "a") as nc:
+        z = _np.asarray(nc["zu_3d"][:], dtype="f8")
+        th3 = nc["theta"][:]
+        pi = exner_basic_state(z, 99388.42, 285.0)[None, :, None, None]
+        v = nc.createVariable("ta", "f4", ("time", "zu_3d", "y", "x"),
+                              fill_value=-9999.0)
+        v.units = "degree_"
+        v[:] = th3 * pi - 273.15
+    p_s, th = run("config_bs_fit.yaml", "bs_p3d", data_3d="test_3d_bs")
+    check(abs(p_s - 99388.42) < 5.0 and abs(th - 285.0) < 0.5,
+          f"basic state: ta / theta overrides a wrong namelist value "
+          f"({p_s / 100:.2f} hPa, {th:.2f} K)", failures)
+
+    # an explicit config value is kept even when ta / theta disagrees
+    p_s, _ = run("config_bs_explicit.yaml", "bs_p3d", data_3d="test_3d_bs",
+                 extra="surface_pressure: 100000.0\n")
+    check(abs(p_s - 1.0e5) < 1e-6,
+          "basic state: an explicit config value wins over the fit",
+          failures)
+    return failures
+
+
+def verify_t_surface_rename(tmp):
+    """`t_surf` became `t_surface` in 0.22; old configs keep working."""
+    from palm2gis.config import Config
+    failures = []
+    legacy = tmp / "config_legacy_tsurf.yaml"
+    legacy.write_text((tmp / "config.yaml").read_text()
+                      .replace("derive_t_surface: true",
+                               "derive_t_surf: true"))
+    cfg = Config(legacy)
+    check(cfg["surfaces"]["derive_t_surface"] is True
+          and "derive_t_surf" not in cfg["surfaces"],
+          "rename: legacy surfaces.derive_t_surf -> derive_t_surface",
+          failures)
+    old_new = tmp / "config_new_tsurf.yaml"
+    old_new.write_text((tmp / "config_new.yaml").read_text()
+                       .replace("[theta_surface, t_surface]",
+                                "[theta_surface, t_surf]"))
+    cfg = Config(old_new)
+    check(cfg["surfaces"]["derive_t_surface"] is True
+          and cfg["surfaces"]["variables"] == ["theta_surface"],
+          "rename: t_surf in surfaces.variables is read as t_surface",
           failures)
     return failures
 
@@ -926,7 +1048,7 @@ voxel:
     netcdf:
         file: '{{name}}_voxel.nc'
 surfaces:
-    variables: [theta_surface, t_surf]
+    variables: [theta_surface, t_surface]
     all_elements_gpkg:
         file: '{{name}}_surfaces.gpkg'
     all_elements_fgdb:
@@ -957,7 +1079,7 @@ advanced:
             ("bounds", ("zmax", "time_from", "time_to")),
             ("voxel", ("file_from", "file_to", "do_velocity", "scalars",
                        "derive_ta")),
-            ("surfaces", ("file_from", "variables", "derive_t_surf",
+            ("surfaces", ("file_from", "variables", "derive_t_surface",
                           "write_all_elements_gpkg", "write_fgdb",
                           "write_multipatch")),
             ("wind", ("file_from", "file_to", "grid_to", "heights_agl",
@@ -1094,7 +1216,7 @@ advanced:
     rejects(base.replace("[u, v, w, theta, ta]", "[u, v, theta]"),
             "u, v and w together",
             "layout: partial velocity list is rejected")
-    rejects(base.replace("[theta_surface, t_surf]", "theta_surface"),
+    rejects(base.replace("[theta_surface, t_surface]", "theta_surface"),
             "must be a list",
             "layout: a bare name instead of a list is rejected, not split "
             "into letters")
@@ -1191,8 +1313,12 @@ def main():
         print("Verifying handling of a fill-only time variable ...")
         failures += verify_regressions(tmp, tmp / "out", pipeline_main)
 
+        print("Verifying the PALM basic state ...")
+        failures += verify_basic_state(tmp)
+
         print("Verifying the config layout ...")
         failures += verify_layout(tmp, pipeline_main)
+        failures += verify_t_surface_rename(tmp)
         failures += verify_fill_times(tmp, pipeline_main)
 
         print("Verifying the regular time axis ...")

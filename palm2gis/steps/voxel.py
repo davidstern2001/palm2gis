@@ -26,10 +26,9 @@ from ..descriptions import long_name
 from ..log import debug, get_logger, info, warning
 from .georef import (check_product, check_raw_input, require_variables,
                      resolve_z_range, select_times)
-from .thermo import LAPSE_DRY, absolute_humidity, convert_temperature, \
-    exner_profile, exner_simple, fill_profile_gaps, humidity_scale, \
-    is_celsius_exempt, is_temperature, pressure_from_exner, \
-    temperature_scale, theta_to_ta
+from .thermo import absolute_humidity, convert_temperature, \
+    exner_basic_state, humidity_scale, is_celsius_exempt, is_temperature, \
+    pressure_from_exner, temperature_scale, theta_to_ta
 
 log = get_logger()
 
@@ -170,9 +169,9 @@ def stage_voxel(cfg, grid):
         k_off = 1 if (vx["drop_k0"] and nz0_f == 0) else 0
         kz0, kzmax = nz0_f + k_off, nzmax_f
         # Two z arrays, deliberately.
-        #   z_rel - height above the domain base, what PALM wrote. The
-        #           Exner profile below pairs it with surface_pressure,
-        #           which is the pressure at the model's z = 0.
+        #   z_rel - height above the domain base, what PALM wrote. PALM's
+        #           basic-state Exner function below pairs it with
+        #           surface_pressure, the pressure at the model's z = 0.
         #   z_out - absolute height, origin_z added. Output geometry only.
         # Collapsing these would trade a geometry error for a temperature
         # one.
@@ -329,89 +328,25 @@ def stage_voxel(cfg, grid):
 
             gm = write_crs_var(fout, grid.crs)
 
+            # PALM's basic-state Exner function on the output levels: linear
+            # in z, fixed for the whole run (see thermo). One profile serves
+            # both the ta and the ah derivation.
             pi = None
-            if derive_ta:
-                # Exner profile from the horizontally averaged theta of the
-                # first selected timestep, on absolute model heights.
-                th0 = np.ma.masked_invalid(
-                    nc.variables["theta"][its[0], kz0:kzmax,
-                                          grid.ny0:grid.nymax,
-                                          grid.nx0:grid.nxmax])
-                theta_bar = np.ma.filled(th0.mean(axis=(1, 2)), np.nan)
-                pi = exner_profile(z_rel, theta_bar,
-                                   p_surface=cfg["surface_pressure"])
-                # Report from the GAP-FILLED profile, which is what the
-                # integration used. The raw means are NaN on any level
-                # lying entirely inside terrain - normal in a coarse
-                # domain, where the lowest levels can sit below the terrain
-                # across the whole cut - and reporting those gave a "+nan K"
-                # that looked like a failure when nothing was wrong.
-                th_fill, n_gap = fill_profile_gaps(theta_bar)
-                if n_gap:
-                    info("[voxel] {} of {} levels are entirely inside "
-                         "terrain (lowest air at z = {:.0f} m); their theta "
-                         "is interpolated for the hydrostatic integration, "
-                         "and ta there is terrain fill either way.",
-                         n_gap, len(z_rel),
-                         float(z_out[int(np.argmax(np.isfinite(theta_bar)))]))
-                off = th_fill * (pi - 1.0)
-                o0, o1 = float(off[0]), float(off[-1])
-                z0, z1 = float(z_out[0]), float(z_out[-1])
-                if o0 >= 0.0 and o1 >= 0.0:
-                    info("[voxel] deriving ta from theta: ta comes out "
-                         "{:.2f} K warmer at z = {:.0f} m, {:.2f} K warmer "
-                         "at {:.0f} m.", o0, z0, o1, z1)
-                elif o0 <= 0.0 and o1 <= 0.0:
-                    info("[voxel] deriving ta from theta: ta comes out "
-                         "{:.2f} K cooler at z = {:.0f} m, {:.2f} K cooler "
-                         "at {:.0f} m.", -o0, z0, -o1, z1)
-                else:
-                    info("[voxel] deriving ta from theta: ta - theta = "
-                         "{:+.2f} K at z = {:.0f} m, {:+.2f} K at {:.0f} m.",
-                         o0, z0, o1, z1)
-
-                # The offset must decay with height at the dry adiabatic
-                # rate whatever the stratification, because theta * dPi/dz
-                # = -g/cp. A departure means the profile, p_surface or the
-                # height axis is wrong - worth saying so rather than
-                # writing plausible-looking temperatures.
-                lapse = (o0 - o1) / (z1 - z0) * 1000.0 if z1 > z0 else None
-                if lapse is not None and abs(lapse - LAPSE_DRY) > 0.5:
-                    warning("[voxel] the theta -> ta offset changes at "
-                            "{:.1f} K/km, but a constant-theta column is a "
-                            "dry adiabat and must give {:.1f} K/km - check "
-                            "surface_pressure and the z axis.",
-                            lapse, LAPSE_DRY)
-                elif lapse is not None:
-                    debug("[voxel] offset decays at {:.1f} K/km (dry "
-                          "adiabat {:.1f}); Exner {:.5f}..{:.5f} from "
-                          "p_s = {:.0f} Pa at z = 0.",
-                          lapse, LAPSE_DRY, pi[0], pi[-1],
-                          cfg["surface_pressure"])
-                pi = pi[:, None, None]
+            if derive_ta or derive_ah:
+                p_s, th_ref = cfg["surface_pressure"], cfg["pt_surface"]
+                pi_col = exner_basic_state(z_rel, p_s, th_ref)
+                pi = pi_col[:, None, None]
+                info("[voxel] PALM basic state: p_s = {:.2f} hPa at z = 0, "
+                     "theta_ref = {:.2f} K -> Exner {:.5f} at {:.0f} m asl, "
+                     "{:.5f} at {:.0f} m asl.", p_s / 100.0, th_ref,
+                     float(pi_col[0]), float(z_out[0]), float(pi_col[-1]),
+                     float(z_out[-1]))
 
             p_col = q_factor = ta_scale = None
             if derive_ah:
-                # Absolute pressure on the output levels, (nz, 1, 1). The
-                # same hydrostatic Exner profile ta is derived from; with no
-                # theta in the file, a constant reference theta instead -
-                # for PRESSURE that is off by well under 0.1 %.
-                if pi is not None:
-                    pi_ah = pi.ravel()
-                elif "theta" in nc.variables:
-                    th0 = np.ma.masked_invalid(
-                        nc.variables["theta"][its[0], kz0:kzmax,
-                                              grid.ny0:grid.nymax,
-                                              grid.nx0:grid.nxmax])
-                    pi_ah = exner_profile(
-                        z_rel, np.ma.filled(th0.mean(axis=(1, 2)), np.nan),
-                        p_surface=cfg["surface_pressure"])
-                else:
-                    pi_ah = exner_simple(z_rel,
-                                         p_surface=cfg["surface_pressure"])
-                p_col = pressure_from_exner(pi_ah)[:, None, None]
-                if ah_temp == "theta" and pi is None:
-                    pi = pi_ah[:, None, None]
+                # Absolute pressure on the output levels, (nz, 1, 1), from
+                # the same basic state ta is derived from.
+                p_col = pressure_from_exner(pi)
                 q_units = getattr(nc.variables["q"], "units", None)
                 q_factor = humidity_scale(q_units)
                 if ah_temp == "ta":
@@ -452,22 +387,28 @@ def stage_voxel(cfg, grid):
                 if var == "ta" and derive_ta:
                     ov.units = "degC" if celsius else "K"
                     ov.long_name = long_name("ta")
-                    ov.comment = ("derived from theta via a hydrostatic "
-                                  "Exner profile (PALM did not output ta)")
+                    ov.comment = ("derived from theta with PALM's basic-state "
+                                  "Exner function (PALM did not output ta)")
                     ov.derived_from = "theta"
+                    ov.palm2gis_surface_pressure = float(
+                        cfg["surface_pressure"])
+                    ov.palm2gis_pt_surface = float(cfg["pt_surface"])
                     continue
                 if var == "ah" and derive_ah:
                     ov.units = "g m-3"
                     ov.long_name = long_name("ah")
                     ov.comment = (
                         "derived as q * p / (Rd * Tv), Tv = T (1 + 0.608 q), "
-                        "with T from {} and p from a hydrostatic Exner "
-                        "profile (PALM did not output ah). PALM's q is the "
-                        "total water content, which equals specific "
+                        "with T from {} and p from PALM's basic-state "
+                        "Exner function (PALM did not output ah). PALM's q "
+                        "is the total water content, which equals specific "
                         "humidity when no cloud water is present."
                         .format("PALM's ta" if ah_temp == "ta"
                                 else "theta"))
                     ov.derived_from = "q"
+                    ov.palm2gis_surface_pressure = float(
+                        cfg["surface_pressure"])
+                    ov.palm2gis_pt_surface = float(cfg["pt_surface"])
                     continue
                 src = nc.variables.get(var)
                 if src is not None and hasattr(src, "units"):

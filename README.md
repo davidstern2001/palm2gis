@@ -116,7 +116,7 @@ Because the style is stored inside each GeoPackage, those files contain a second
 
 **Vertical datum.** Every z in every product is **height above sea level**: PALM's z = 0 sits at `origin_z`, which is added on output exactly as `origin_x` / `origin_y` are added to the horizontal coordinates. If your static driver leaves `origin_z` at 0 — many do — the run warns and you can set `advanced.origin_z` yourself. In an ArcGIS scene, set the layer's elevation to *absolute height from the feature's z-values*.
 
-**Temperature units.** PALM writes `ta` and `ta_2m*` in **degrees Celsius** and `theta`, `tsurf*`, `t_surf*` in **kelvin**. `celsius` selects the output scale and the input scale is read from each variable's `units`, so an already-Celsius variable is never shifted again. `theta` is exempt: potential temperature stays kelvin either way. An unrecognised unit string raises rather than being guessed — use the `temperature_units` map to state the scale explicitly.
+**Temperature units.** PALM writes `ta` and `ta_2m*` in **degrees Celsius** and `theta`, `tsurf*`, `t_surf*` (and palm2gis' `t_surface`) in **kelvin**. `celsius` selects the output scale and the input scale is read from each variable's `units`, so an already-Celsius variable is never shifted again. `theta` is exempt: potential temperature stays kelvin either way. An unrecognised unit string raises rather than being guessed — use the `temperature_units` map to state the scale explicitly.
 
 All layers share the CRS from `input.crs` (default `EPSG:32633`) and absolute coordinates, so they overlay each other — and any basemap — correctly. The `gis` module of `paraview_vis` (draping an orthophoto exported from QGIS) has no counterpart here for exactly that reason: in GIS the basemap is already underneath.
 
@@ -151,7 +151,7 @@ voxel:
         file: '{name}_voxel.nc'           # {name} = project.name
 
 surfaces:
-    variables: [theta_surface, t_surf]
+    variables: [theta_surface, t_surface]
     all_elements_gpkg:
         file: '{name}_surfaces.gpkg'
     all_elements_fgdb:
@@ -195,7 +195,8 @@ palm2gis reads three different PALM files, each named once in `input`:
 | setting | PALM file | used by | typical name |
 | --- | --- | --- | --- |
 | `input.static_driver` | static driver (model input) | all stages; `canopy` reads LAD from it | `*_static*` |
-| `input.p3d` | `_p3d` namelist (model input) | grid, output intervals, `surface_pressure` | `*_p3d*` |
+| `input.p3d` | `_p3d` namelist (model input) | grid, output intervals, `surface_pressure`, `pt_surface` | `*_p3d*` |
+| `input.dynamic_driver` | dynamic driver (model input, optional) | root-domain `surface_pressure`; found automatically next to the p3d | `*_dynamic` |
 | `input.data_3d` | 3D output | `voxel`, `wind` | `DATA_3D_NETCDF*` |
 | `input.surface_data` | surface output | `surfaces` | `SURFACE_DATA_NETCDF*` |
 
@@ -207,15 +208,22 @@ The unstructured surface elements are classified by orientation, the same `zenit
 
 The element layers hold **every** face of the static driver's geometry in a single layer, horizontal faces as dx × dy quads at their own height and walls as dz-tall vertical quads, each carrying the configured variables. The `orient` column (`up`, `down`, `wall_N`, `wall_E`, `wall_S`, `wall_W`) drives symbology and filtering, and `z_agl` (face height minus that column's terrain) separates roofs from ground **without** needing `buildings_2d`, which some static drivers leave empty. In a 3D scene this is the layer that shows a whole city block's surface temperature — roofs and every wall facing — at once. It is also by far the largest output: rows = elements × timesteps, and the run warns above two million.
 
-**Actual temperature from potential temperature.** PALM's prognostic variables are potential temperatures: `theta` in the volume, `theta_surface` (or `theta_surf`) at the surface. The actual temperatures are `ta` and `t_surf`, related by `T = theta * Pi` with the Exner function integrated hydrostatically (`dPi/dz = -g/(cp*theta)`) from `surface_pressure`.
+**Actual temperature from potential temperature.** PALM's prognostic variables are potential temperatures: `theta` in the volume, `theta_surface` (or `theta_surf`) at the surface. The actual temperatures are `ta` and `t_surface`, related by `T = theta * Pi`. The Exner function is **PALM's own basic state**, because PALM converted between the two with it: a constant-theta column fixed at initialisation, `Pi(z) = (surface_pressure / p0)^kappa - g z / (cp pt_surface)`, linear in z and unchanged for the whole run. (On real output `ta / theta` fits that line to under 0.0001 K; integrating the current theta profile instead, as up to 0.21 did, was off by about 0.3 K per km.)
 
-`surface_pressure` is read from the `_p3d` namelist unless it is set in the config, so it cannot drift from what the run actually used. **PALM gives that key in hPa** and palm2gis converts to Pa; a value set as `advanced.surface_pressure` is taken as Pa and wins untouched. Only when there is neither does it fall back to 101325 Pa — the standard atmosphere at *sea level*, which is wrong for any elevated domain and biases every derived temperature warm by roughly 0.85 K per 10 hPa. Prague's ~200 m is worth about 1.7 K, a uniform offset that no pattern in the output would reveal.
+`surface_pressure` and `pt_surface` must be what the run used, not the real atmosphere, and PALM takes them from different places per domain:
 
-Listing `ta` in `voxel.variables` or `t_surf` in `surfaces.variables` *ensures* those variables rather than always computing them: **if the file already holds PALM's own `ta` or `t_surf`, that value is used**, because it is exact; only when it is absent is it reconstructed, and the reconstruction is tagged `derived_from = "theta"` so the two can never be confused. Surface temperature is evaluated at each face's own height and appears in every element layer. Both `theta_surface` and `theta_surf` are accepted, and a listed variable missing under one spelling is substituted from the other. PALM's `p` output is the *perturbation* pressure and is deliberately never used as absolute pressure.
+| domain | `surface_pressure` | `pt_surface` |
+| --- | --- | --- |
+| root | dynamic driver `surface_forcing_surface_pressure`, **first value only** (`input.dynamic_driver`, or `<job>_dynamic` next to the p3d); else its p3d | its p3d |
+| nested child (`*_p3d_N02`) | its p3d, else the **parent** p3d (`*_p3d`) | same order |
 
-**Absolute humidity from `q`.** Listing `ah` in `voxel.variables` adds the water vapour density in g/m³, ensured like `ta`: PALM's own `ah` is copied if the file has one, otherwise it is derived as `ah = q · p / (Rd · Tv)` with `Tv = T (1 + 0.608 q)`. `T` is PALM's `ta` when the file holds it (exact) and the theta-derived air temperature otherwise; `p` is the same hydrostatic pressure the `ta` derivation uses, so a wrong `surface_pressure` biases `ah` by about 1 % per 10 hPa. `q` is read in kg/kg, or g/kg when its `units` say so. PALM's `q` is the total water content, which equals specific humidity when no cloud water is present. The result is tagged `derived_from = "q"`.
+**The namelist gives `surface_pressure` in hPa**; palm2gis converts to Pa. `advanced.surface_pressure` (Pa) and `advanced.pt_surface` (K) override everything. When nothing is found, PALM's defaults (1013.25 hPa, 300 K) are used with a warning — roughly 0.85 K per 10 hPa of error. Whenever the 3D input holds both `ta` and `theta`, their ratio is PALM's exact Exner function: palm2gis fits it, confirms the resolved values, and replaces them if they disagree by more than 0.05 K (a config value is kept, with a warning). The values used are written as `palm2gis_surface_pressure` / `palm2gis_pt_surface` attributes on derived variables.
 
-The two names are different quantities, and only one of them is an air temperature. `ta` is PALM's **true air temperature**, an atmospheric field. `t_surf` is a **surface skin temperature**. In the earlier config layout they were `voxel.derive_ta` and `surfaces.derive_t_surf` (called `surfaces.derive_ta` up to 0.17.0, which claimed both the wrong quantity and the wrong medium).
+Listing `ta` in `voxel.variables` or `t_surface` in `surfaces.variables` *ensures* those variables rather than always computing them: **if the file already holds PALM's own `ta` or surface temperature (`t_surface` or `t_surf`), that value is used**, because it is exact; only when it is absent is it reconstructed, and the reconstruction is tagged `derived_from = "theta"` so the two can never be confused. Surface temperature is evaluated at each face's own height and appears in every element layer. Both `theta_surface` and `theta_surf` are accepted, and a listed variable missing under one spelling is substituted from the other. PALM's `p` output is the *perturbation* pressure and is deliberately never used as absolute pressure.
+
+**Absolute humidity from `q`.** Listing `ah` in `voxel.variables` adds the water vapour density in g/m³, ensured like `ta`: PALM's own `ah` is copied if the file has one, otherwise it is derived as `ah = q · p / (Rd · Tv)` with `Tv = T (1 + 0.608 q)`. `T` is PALM's `ta` when the file holds it (exact) and the theta-derived air temperature otherwise; `p` comes from the same basic state the `ta` derivation uses, so a wrong `surface_pressure` biases `ah` by about 1 % per 10 hPa. `q` is read in kg/kg, or g/kg when its `units` say so. PALM's `q` is the total water content, which equals specific humidity when no cloud water is present. The result is tagged `derived_from = "q"`.
+
+The two names are different quantities, and only one of them is an air temperature. `ta` is PALM's **true air temperature**, an atmospheric field. `t_surface` is a **surface skin temperature**, named to match `theta_surface`. In the earlier config layout they were `voxel.derive_ta` and `surfaces.derive_t_surface` (called `surfaces.derive_ta` up to 0.17.0, which claimed both the wrong quantity and the wrong medium, and `derive_t_surf` up to 0.21, when the output was `t_surf`; the old names, and `t_surf` in `surfaces.variables`, still work with a warning).
 
 ### wind — vectors at heights above ground
 

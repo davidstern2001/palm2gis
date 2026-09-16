@@ -1,6 +1,43 @@
 # Changelog
 
-## Unreleased
+## 0.22.0
+
+**Derived `ta` / `t_surface` / `ah` use PALM's own basic state**
+
+- The Exner function is now PALM's basic state, fixed at initialisation
+  and linear in z: `Pi(z) = (surface_pressure/p0)^kappa - g z/(cp
+  pt_surface)`. It replaces the integration over the current theta
+  profile, which departed from PALM's Pi by ~0.3 K per km. Verified on
+  holesovice_stern_adapt: `ta / theta` fits the line to < 0.0001 K at every
+  timestep, while the dynamic driver's surface pressure moved by 8 hPa.
+- `surface_pressure` and `pt_surface` are resolved per domain from what the
+  run used: root domain - the dynamic driver's
+  `surface_forcing_surface_pressure` (first value; `input.dynamic_driver`
+  or `<job>_dynamic` next to the p3d), else its p3d; nested child - its
+  p3d, else the parent `*_p3d`. `advanced.surface_pressure` (Pa) and the
+  new `advanced.pt_surface` (K) override.
+- When the 3D input holds both `ta` and `theta`, their ratio is fitted to
+  confirm the basic state; resolved values off by more than 0.05 K are
+  replaced by the fit, config values are kept with a warning.
+- The lapse-rate warning is gone (it could not detect a wrong pressure).
+  Derived variables carry `palm2gis_surface_pressure` /
+  `palm2gis_pt_surface`.
+
+**Fix: `read_p3d` dropped Fortran trailing-dot reals**
+
+- `surface_pressure = 1000.`, `pt_surface = 285.`, `dt_data_output_av =
+  600.` and the like were silently skipped, so palm2gis fell back to
+  defaults (101325 Pa for holesovice_stern_adapt N02: t_surface ~1.1 K too
+  warm).
+
+**`t_surf` renamed to `t_surface`**
+
+- The derived / copied surface skin temperature is written as `t_surface`,
+  matching `theta_surface`. A file's own `t_surf` is still recognised as
+  input. `t_surf` in `surfaces.variables` and the legacy key
+  `surfaces.derive_t_surf` (now `derive_t_surface`) still work, with a
+  warning.
+
 
 **ArcGIS Pro voxel layer: CRS no longer "unsupported (0)"**
 

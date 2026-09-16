@@ -33,14 +33,15 @@ STATE_FILE = ".palm2gis_state.json"
 # Which config sections each stage's output depends on. `domain` and
 # `bounds` affect every product; the rest are per stage.
 _STAGE_KEYS = {
-    # surface_pressure feeds the theta -> ta derivation, so a change to it
-    # must invalidate the products that carry derived temperatures.
+    # surface_pressure and pt_surface feed the theta -> ta derivation, so a
+    # change to either must invalidate the products that carry derived
+    # temperatures.
     "voxel":    ("domain", "bounds", "crs", "celsius", "surface_pressure",
-                 "voxel"),
+                 "pt_surface", "voxel"),
     # qgis_styles decides what goes INTO the GeoPackages (an embedded
     # layer_styles table), so toggling it must rewrite them.
     "surfaces": ("domain", "bounds", "crs", "celsius", "surface_pressure",
-                 "qgis_styles", "qgis_styles_3d", "surfaces"),
+                 "pt_surface", "qgis_styles", "qgis_styles_3d", "surfaces"),
     "wind":     ("domain", "bounds", "crs", "qgis_styles", "qgis_styles_3d",
                  "wind"),
     "canopy":   ("domain", "bounds", "crs", "canopy"),

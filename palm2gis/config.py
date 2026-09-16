@@ -55,6 +55,11 @@ DEFAULTS = {
         # relative heights into absolute ones. Static drivers often carry
         # 0 because nobody set it; the run warns when that happens.
         "origin_z": None,
+        # PALM dynamic driver, read for the basic-state surface pressure
+        # (`surface_forcing_surface_pressure`, first value). Null = look
+        # for <job>_dynamic next to the p3d, for the ROOT domain only: a
+        # nested child runs with the namelist value instead.
+        "dynamic_driver": None,
     },
     "bounds": {
         # Subdomain cut in metres, LOCAL PALM coordinates. Unset = no cut.
@@ -107,12 +112,12 @@ DEFAULTS = {
         # (dz/2, 3dz/2, ...) - voxel layers handle that best.
         "drop_k0": True,
         # Ensure `ta` - AIR temperature. Not the surface skin temperature,
-        # which is `t_surf` and comes from the surfaces stage; `ta` and
-        # `t_surf` are different quantities and neither is ever named
-        # ta_surf/ta_surface. Derived from theta via a hydrostatic Exner
-        # profile (T = theta * Pi, Pi integrated up the column from
-        # surface_pressure). Requires theta, which is added to scalars if
-        # missing. A derived value is tagged derived_from = "theta" so it
+        # which is `t_surface` and comes from the surfaces stage; `ta` and
+        # `t_surface` are different quantities and neither is ever named
+        # ta_surf/ta_surface. Derived from theta with PALM's basic-state
+        # Exner function (T = theta * Pi, Pi from surface_pressure and
+        # pt_surface, see below). Requires theta, which is added to scalars
+        # if missing. A derived value is tagged derived_from = "theta" so it
         # cannot be confused with PALM's own. PALM's `p` output is the
         # PERTURBATION pressure and is deliberately NOT used. If PALM
         # already writes `ta`, it is copied - the model's own value is
@@ -121,8 +126,8 @@ DEFAULTS = {
         # Ensure `ah` - absolute humidity (water vapour density, g/m3).
         # PALM's own `ah` is copied if the file has one; otherwise it is
         # derived from `q` as q * p / (Rd * Tv), with T from PALM's `ta`
-        # (or from theta, as for derive_ta) and p from the hydrostatic
-        # Exner profile. Requires q.
+        # (or from theta, as for derive_ta) and p from the same basic
+        # state. Requires q.
         "derive_ah": False,
     },
     "surfaces": {
@@ -145,15 +150,17 @@ DEFAULTS = {
         # field names and NULLs.
         "fgdb_to": None,
         "write_fgdb": True,
-        # Add `t_surf` - the actual SURFACE (skin) temperature - next to
-        # every surface potential temperature, converted at each face's
-        # own height. If PALM already writes t_surf its own value is used.
+        # Add `t_surface` - the actual SURFACE (skin) temperature - next
+        # to every surface potential temperature (`theta_surface`),
+        # converted at each face's own height. If the file already holds
+        # it (`t_surface` or `t_surf`) its own value is used.
         #
         # NOT to be confused with voxel.derive_ta: `ta` is PALM's TRUE AIR
         # temperature, an atmospheric quantity, and nothing in this stage
         # produces one. This option was called `derive_ta` up to 0.17.0,
-        # which was wrong twice over; the old name still works and warns.
-        "derive_t_surf": False,
+        # which was wrong twice over, and `derive_t_surf` up to 0.21 (the
+        # output was then `t_surf`); both old names still work and warn.
+        "derive_t_surface": False,
         # EVERY surface element of the static driver geometry - ground,
         # roofs and all four wall orientations - as PolygonZ in one
         # GeoPackage, with an `orient` column (up / down / wall_N / wall_E
@@ -210,9 +217,9 @@ DEFAULTS = {
     # open, set this to false and the 2D style and temporal settings are
     # unaffected.
     "qgis_styles_3d": True,
-    # Write temperature variables (theta*, tsurf*/t_surf*, ta*) in degrees
-    # Celsius instead of kelvin, in EVERY product: voxel NetCDF and the
-    # surface element layers. Applied at
+    # Write temperature variables (theta*, tsurf*/t_surf*, t_surface, ta*)
+    # in degrees Celsius instead of kelvin, in EVERY product: voxel NetCDF
+    # and the surface element layers. Applied at
     # write time only - all physics (the Exner/ta derivation) still runs in
     # kelvin, and NoData cells keep their fill value. The `units` attribute
     # in the NetCDF outputs is set to "degC" accordingly. Inputs must stay
@@ -226,16 +233,18 @@ DEFAULTS = {
     # than guessing, so this is the escape hatch when a new PALM version
     # writes something new.
     "temperature_units": {},
-    # Pressure at the model's z = 0 level (the domain base, i.e. at
-    # origin_z - NOT sea level), used for the Exner function when deriving
-    # air temperature. Left null (the default) it is read from the p3d:
-    # PALM's own `surface_pressure`, which the namelist gives in hPa and
-    # which is converted to Pa here. Falls back to 101325 Pa only when
-    # there is no p3d and no value here - a standard-atmosphere placeholder
-    # that is wrong for any domain much above sea level. This matters: T
-    # scales as (p/p0)^0.286, so a 10 hPa error shifts the derived
-    # temperature by about 0.85 K.
+    # PALM's basic state, which fixes the Exner function used to derive ta,
+    # t_surface and ah from potential temperature:
+    #   Pi(z) = (surface_pressure / p0)^kappa - g z / (cp pt_surface)
+    # Both are what PALM itself ran with, NOT the real atmosphere - PALM
+    # converted T <-> theta with them, so only the same values invert that
+    # exactly. Left null (the default) they are resolved per domain: see
+    # georef.resolve_basic_state (dynamic driver for the root domain, the
+    # p3d, the parent p3d for a nested child), and cross-checked against
+    # ta / theta whenever a 3D file holds both. A value set here wins.
+    # surface_pressure is in Pa (the namelist gives hPa), pt_surface in K.
     "surface_pressure": None,
+    "pt_surface": None,
     "canopy": {
         "enabled": False,
         # Where `lad` lives - the static driver, unless overridden.
@@ -257,18 +266,30 @@ DEFAULTS = {
 # Keys renamed since a released version: {section: {old: new}}. Honoured
 # on load with a warning, so an existing job config keeps working.
 _RENAMED_KEYS = {
-    "surfaces": {"derive_ta": "derive_t_surf"},
+    "surfaces": {"derive_ta": "derive_t_surface",
+                 "derive_t_surf": "derive_t_surface"},
 }
 
 
 def _migrate_renamed_keys(user):
     """Accept pre-0.18 key names, warning once per key.
 
-    surfaces.derive_ta derived `t_surf`, a SURFACE skin temperature -
-    while `ta` in PALM is the true AIR temperature. The name claimed the
-    wrong quantity and the wrong medium, and sat next to voxel.derive_ta,
-    which does genuinely derive air temperature.
+    surfaces.derive_ta derived the SURFACE skin temperature - while `ta`
+    in PALM is the true AIR temperature. The name claimed the wrong
+    quantity and the wrong medium, and sat next to voxel.derive_ta, which
+    does genuinely derive air temperature. surfaces.derive_t_surf became
+    derive_t_surface in 0.22 with the output renamed to `t_surface`, to
+    match `theta_surface`. A legacy `t_surf` in surfaces.variables is
+    renamed too.
     """
+    sf = user.get("surfaces")
+    if isinstance(sf, dict) and isinstance(sf.get("variables"), list) \
+            and "t_surf" in sf["variables"]:
+        warning("config: surfaces.variables lists 't_surf', which is now "
+                "written as 't_surface' (matching theta_surface). The old "
+                "name still works for now.")
+        sf["variables"] = ["t_surface" if v == "t_surf" else v
+                           for v in sf["variables"]]
     for section, renames in _RENAMED_KEYS.items():
         block = user.get(section)
         if not isinstance(block, dict):
@@ -282,7 +303,7 @@ def _migrate_renamed_keys(user):
                         section, old, section, new, section, new)
             else:
                 warning("config: {}.{} has been renamed to {}.{}. It "
-                        "derives t_surf, a SURFACE temperature; `ta` is "
+                        "derives t_surface, a SURFACE temperature; `ta` is "
                         "PALM's true AIR temperature. The old name still "
                         "works for now.", section, old, section, new)
                 block[new] = block[old]
@@ -398,6 +419,9 @@ class Config:
             _drop_removed_keys(user)
             self.layout = "legacy"
         self._cfg = _deep_merge(DEFAULTS, user)
+        self._explicit_basic_state = {
+            k: self._cfg[k] is not None
+            for k in ("surface_pressure", "pt_surface")}
         root = self._cfg["project"]["root"]
         self.root = Path(root).resolve() if root else self._path.parent
         self.output_dir = self.resolve(self._cfg["project"]["output_dir"])
@@ -431,53 +455,17 @@ class Config:
         except ValueError:
             return str(p)
 
-    # -- namelist-derived settings -----------------------------------------
-    P_STANDARD = 101325.0        # standard atmosphere at SEA LEVEL [Pa]
+    # -- run-derived settings ----------------------------------------------
+    def basic_state_explicit(self):
+        """Which basic-state values the user set in the config (as loaded,
+        before resolve_basic_state filled the rest in)."""
+        return dict(self._explicit_basic_state)
 
-    def resolve_surface_pressure(self, p3d):
-        """Fill in `surface_pressure` from the p3d when it was left null.
-
-        PALM's namelist `surface_pressure` is in HECTOPASCALS (default
-        1013.25); everything here works in Pa, so it is converted. A value
-        set explicitly in the YAML is in Pa and wins untouched.
-
-        Without this the config carried a hardcoded 101325 Pa - the
-        standard atmosphere at SEA LEVEL. Prague sits near 200 m, where
-        the real pressure is some 20 hPa lower, which biases every derived
-        air temperature by about 1.7 K. Nothing downstream could detect
-        that: the field simply comes out uniformly too warm.
-        """
-        if self._cfg["surface_pressure"] is not None:
-            debug("[static] surface_pressure = {:.0f} Pa (from the config).",
-                  float(self._cfg["surface_pressure"]))
-            return
-
-        raw = (p3d or {}).get("surface_pressure")
-        if raw is None:
-            self._cfg["surface_pressure"] = self.P_STANDARD
-            info("[static] no surface_pressure in the p3d or the config - "
-                 "using the standard {:.0f} Pa. That is SEA LEVEL: if the "
-                 "domain base sits well above it, derived air temperatures "
-                 "are biased warm by ~0.85 K per 10 hPa.", self.P_STANDARD)
-            return
-
-        raw = float(raw)
-        # PALM reads this key in hPa. A four- or six-digit number means the
-        # namelist was written in Pa instead - take it at face value rather
-        # than turning 101325 into 10 132 500 Pa, but say so, because PALM
-        # ITSELF would have read it as hPa and the run may be affected.
-        if raw > 2000.0:
-            warning("[static] p3d surface_pressure = {:g} looks like Pa, but "
-                    "PALM reads that key in hPa (and would have used {:g} "
-                    "Pa). Taking it as {:.0f} Pa here - check the namelist.",
-                    raw, raw * 100.0, raw)
-            p_pa = raw
-        else:
-            p_pa = raw * 100.0
-
-        self._cfg["surface_pressure"] = p_pa
-        info("[static] surface_pressure = {:.0f} Pa ({:g} hPa, from the "
-             "p3d).", p_pa, p_pa / 100.0)
+    def set_basic_state(self, surface_pressure, pt_surface):
+        """Store the resolved basic state [Pa, K]; see
+        georef.resolve_basic_state."""
+        self._cfg["surface_pressure"] = float(surface_pressure)
+        self._cfg["pt_surface"] = float(pt_surface)
 
     # -- overwrite policy --------------------------------------------------
     @property

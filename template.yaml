@@ -41,7 +41,12 @@ project:
 input:
     static_driver: 'INPUT/project_static_N02'          # *_static*
     p3d:           'INPUT/project_p3d_N02'             # nz, dz, intervals,
-                                                       # surface_pressure
+                                                       # surface_pressure,
+                                                       # pt_surface (a child
+                                                       # falls back to the
+                                                       # parent *_p3d)
+    #dynamic_driver: null        # root domain only; default <job>_dynamic
+                                 # next to the p3d
     data_3d:       'OUTPUT/DATA_3D_NETCDF_N02'         # voxel and wind
     surface_data:  'OUTPUT/SURFACE_DATA_NETCDF_N02'    # surfaces
     #crs: 'EPSG:32633'           # CRS of the static driver's origin_x/y
@@ -101,9 +106,9 @@ voxel:
 # z_agl and a time field for the time slider.
 surfaces:
     #enabled: true
-    # t_surf = actual skin temperature: PALM's own if the file has it,
+    # t_surface = actual skin temperature: PALM's own if the file has it,
     # otherwise derived from theta_surface (a POTENTIAL temperature).
-    variables: [theta_surface, t_surf]
+    variables: [theta_surface, t_surface]
 
     all_elements_gpkg:           # GeoPackage; QGIS and ArcGIS
         file: '{name}_surfaces.gpkg'
@@ -154,7 +159,9 @@ canopy:
     #dz: null                    # vertical spacing; required without p3d
     #origin_time: null           # override the static driver, 'YYYY-MM-DD HH:MM:SS'
     #origin_z: null              # override the static driver [m a.s.l.]
-    #surface_pressure: null      # Pa at z = 0; default from the p3d (hPa there)
+    #surface_pressure: null      # Pa at z = 0; default: what PALM used
+                                 # (dynamic driver / p3d / parent p3d)
+    #pt_surface: null            # K; default from the p3d / parent p3d
     #temperature_units: {}       # e.g. {ta_2m*_xy: C} for unreadable units
     #qgis_styles: true           # write .qml styles next to the layers
     #qgis_styles_3d: true        # add a 3D renderer to those styles

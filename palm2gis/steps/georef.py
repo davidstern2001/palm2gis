@@ -20,6 +20,9 @@ from ..log import debug, get_logger, info, progress, warning
 from .thermo import TEMP_PREFIXES as _TEMP_VAR_PREFIXES
 from .thermo import CELSIUS_UNITS as _THERMO_CELSIUS_UNITS
 from .thermo import CELSIUS_PREFIXES as _THERMO_CELSIUS_PREFIXES
+from .thermo import (P_SURFACE_DEFAULT, PT_SURFACE_DEFAULT,
+                     TemperatureUnitError, exner_basic_state,
+                     fit_basic_state, temperature_scale)
 
 log = get_logger()
 
@@ -89,7 +92,7 @@ class Grid:
         quads and wind arrows origin_z metres too low - 175 m for the
         Holesovice domain.
 
-        NOT for thermodynamics. exner_profile / exner_simple pair z with
+        NOT for thermodynamics. exner_basic_state pairs z with
         `surface_pressure`, which is defined as the pressure at the
         model's z = 0; feeding them absolute heights would put a second,
         larger error on every derived temperature. Keep a relative z for
@@ -158,7 +161,10 @@ def read_p3d(path):
         dx = 1.0, dy = 1.0, dz = 1.0,
 
     An earlier version anchored the pattern to whole lines and so read
-    nothing at all from those two.
+    nothing at all from those two. Fortran's trailing-dot reals
+    (`surface_pressure = 1000.`, `pt_surface = 285.`) are matched too: the
+    pattern used to demand a digit after the point, silently dropping both,
+    so palm2gis fell back to a default instead of the run's own value.
 
     Comment lines (`!`) are stripped first, so a commented-out or
     documentary value cannot override the real one. Values that are not
@@ -170,7 +176,8 @@ def read_p3d(path):
         line = raw_line.split("!", 1)[0]          # drop trailing comments
         for m in re.finditer(
                 r"([A-Za-z_][A-Za-z0-9_]*)\s*=\s*"
-                r"([-+]?[0-9]*\.?[0-9]+(?:[eEdD][-+]?[0-9]+)?)\s*(?=[,\s]|$)",
+                r"([-+]?(?:[0-9]+\.?[0-9]*|\.[0-9]+)(?:[eEdD][-+]?[0-9]+)?)"
+                r"\s*(?=[,\s/]|$)",
                 line):
             key = m.group(1).lower()
             raw = m.group(2).replace("d", "e").replace("D", "e")
@@ -184,6 +191,236 @@ def read_p3d(path):
                 out[key] = (int(val) if key.startswith("n")
                             and val.is_integer() else val)
     return out
+
+
+# ------------------------------
+# 2b. PALM BASIC STATE (surface_pressure, pt_surface)
+# ------------------------------
+# Deriving ta / t_surface / ah from potential temperature needs the basic
+# state PALM ITSELF ran with (see thermo). Which source holds it depends on
+# the domain, established on real output (holesovice_stern_adapt):
+#
+#   root domain   - `surface_forcing_surface_pressure` of the dynamic
+#                   driver, FIRST value only (PALM does not update the basic
+#                   state later), overriding the namelist surface_pressure;
+#   nested child  - the namelist surface_pressure. A child p3d normally does
+#                   not repeat it, and the child then runs with the PARENT
+#                   p3d's value, not with PALM's 1013.25 hPa default;
+#   both          - pt_surface from the namelist, own p3d first, then the
+#                   parent's.
+#
+# A config value wins over all of these. Whenever a 3D file of the same
+# domain holds both ta and theta, ta / theta is PALM's exact Exner function
+# and the result is checked against it (calibrate_basic_state).
+_CHILD_P3D_RE = re.compile(r"^(?P<base>.+)_N(?P<n>\d\d)$")
+DYN_PRESSURE_VAR = "surface_forcing_surface_pressure"
+BASIC_STATE_TOL_K = 0.05          # allowed disagreement with ta / theta
+
+
+def _hpa_to_pa(raw, where):
+    """Namelist surface_pressure (hPa) -> Pa. A four- or six-digit number
+    means the namelist was written in Pa instead; take it at face value but
+    say so, because PALM itself would have read it as hPa."""
+    raw = float(raw)
+    if raw > 2000.0:
+        warning("[static] {} surface_pressure = {:g} looks like Pa, but PALM "
+                "reads that key in hPa (and would have used {:g} Pa). Taking "
+                "it as {:.0f} Pa here - check the namelist.",
+                where, raw, raw * 100.0, raw)
+        return raw
+    return raw * 100.0
+
+
+def domain_files(cfg):
+    """(p3d, parent p3d, dynamic driver, child tag) for the configured
+    domain. Paths are None when not applicable; nothing is checked for
+    existence except the auto-detected dynamic driver."""
+    dom = cfg["domain"]
+    p3d = cfg.resolve(dom["p3d"]) if dom["p3d"] else None
+    parent = child = None
+    if p3d is not None:
+        m = _CHILD_P3D_RE.match(p3d.name)
+        if m:
+            child = "N" + m.group("n")
+            parent = p3d.with_name(m.group("base"))
+    if dom.get("dynamic_driver"):
+        dyn = cfg.resolve(dom["dynamic_driver"])
+    elif p3d is not None and child is None and p3d.name.endswith("_p3d"):
+        dyn = p3d.with_name(p3d.name[:-len("_p3d")] + "_dynamic")
+        dyn = dyn if dyn.is_file() else None
+    else:
+        dyn = None
+    return p3d, parent, dyn, child
+
+
+def _dynamic_surface_pressure(path):
+    """First valid surface_forcing_surface_pressure [Pa] of a dynamic
+    driver, or None."""
+    try:
+        with Dataset(path, "r") as nc:
+            if DYN_PRESSURE_VAR not in nc.variables:
+                return None
+            vals = np.ma.masked_invalid(nc.variables[DYN_PRESSURE_VAR][:])
+            vals = np.ma.masked_where(np.abs(vals + 9999.0) < 1e-3, vals)
+            vals = vals.compressed()
+            return float(vals[0]) if vals.size else None
+    except OSError as exc:
+        warning("[static] cannot read the dynamic driver {} ({}).",
+                cfg_disp_path(path), exc)
+        return None
+
+
+def cfg_disp_path(path):
+    return getattr(path, "name", str(path))
+
+
+def resolve_basic_state(cfg, p3d):
+    """Fill in cfg surface_pressure [Pa] and pt_surface [K] - the basic
+    state PALM ran with - and cross-check them against ta / theta."""
+    explicit = cfg.basic_state_explicit()
+    p3d_path, parent_path, dyn_path, child = domain_files(cfg)
+    own = p3d or {}
+    parent = {}
+    if parent_path is not None:
+        if parent_path.is_file():
+            parent = read_p3d(parent_path)
+        else:
+            debug("[static] parent p3d {} not found.", parent_path)
+
+    # -- surface pressure ----------------------------------------------------
+    if explicit["surface_pressure"]:
+        p_s, p_src = float(cfg["surface_pressure"]), "the config"
+    else:
+        p_s = _dynamic_surface_pressure(dyn_path) if dyn_path else None
+        p_src = "dynamic driver {} ({}[0])".format(
+            cfg_disp_path(dyn_path), DYN_PRESSURE_VAR)
+        if p_s is None and own.get("surface_pressure") is not None:
+            p_s = _hpa_to_pa(own["surface_pressure"], "p3d")
+            p_src = "p3d {}".format(cfg_disp_path(p3d_path))
+        if p_s is None and parent.get("surface_pressure") is not None:
+            p_s = _hpa_to_pa(parent["surface_pressure"], "parent p3d")
+            p_src = "parent p3d {} (child {} inherits it)".format(
+                cfg_disp_path(parent_path), child)
+        if p_s is None:
+            p_s, p_src = P_SURFACE_DEFAULT, "PALM's default"
+            warning("[static] surface_pressure found in no dynamic driver, "
+                    "p3d or parent p3d - assuming PALM's default {:.2f} hPa. "
+                    "Derived ta / t_surface / ah are off by ~0.85 K / ~1 % "
+                    "per 10 hPa if the run used something else; set "
+                    "surface_pressure in the config.", p_s / 100.0)
+
+    # -- reference potential temperature -------------------------------------
+    if explicit["pt_surface"]:
+        th, th_src = float(cfg["pt_surface"]), "the config"
+    elif own.get("pt_surface") is not None:
+        th, th_src = float(own["pt_surface"]), "p3d {}".format(
+            cfg_disp_path(p3d_path))
+    elif parent.get("pt_surface") is not None:
+        th, th_src = float(parent["pt_surface"]), "parent p3d {}".format(
+            cfg_disp_path(parent_path))
+    else:
+        th, th_src = PT_SURFACE_DEFAULT, "PALM's default"
+        warning("[static] pt_surface found in no p3d - assuming PALM's "
+                "default {:.0f} K. Derived ta / t_surface drift by ~0.1 K per "
+                "km per 10 K of error; set pt_surface in the config.", th)
+
+    cfg.set_basic_state(p_s, th)
+    info("[static] PALM basic state{}: surface_pressure = {:.2f} hPa (from "
+         "{}), pt_surface = {:.2f} K (from {}).",
+         " of child {}".format(child) if child else "", p_s / 100.0, p_src,
+         th, th_src)
+    calibrate_basic_state(cfg, explicit)
+
+
+def calibrate_basic_state(cfg, explicit=None):
+    """Check the basic state against PALM's own ta / theta, when a 3D input
+    of this domain holds both.
+
+    ta / theta IS PALM's Exner function, so a linear fit of its horizontal
+    mean against z gives the surface pressure and pt_surface PALM used.
+    The fit is accepted only when it matches the linear basic state closely
+    (a file whose ta was edited, or a synthetic one, may not). A resolved
+    value that disagrees is REPLACED by the fit; a value set in the config
+    is kept, with a warning.
+    """
+    explicit = explicit or cfg.basic_state_explicit()
+    path = None
+    for stage in ("voxel", "wind"):
+        f = cfg[stage].get("file_from")
+        if f and cfg.resolve(f).is_file():
+            path = cfg.resolve(f)
+            break
+    if path is None:
+        return
+    try:
+        with Dataset(path, "r") as nc:
+            if not {"ta", "theta", "zu_3d"} <= set(nc.variables):
+                debug("[static] {} lacks ta, theta or zu_3d - basic state "
+                      "not cross-checked.", cfg.disp(path))
+                return
+            v_ta, v_th = nc.variables["ta"], nc.variables["theta"]
+            if v_ta.ndim != 4 or v_ta.shape != v_th.shape:
+                return
+            z = np.asarray(nc.variables["zu_3d"][:], dtype="f8")
+            ks = np.where(z > 0)[0]
+            if ks.size < 2:
+                return
+            ks = np.unique(ks[np.linspace(0, ks.size - 1,
+                                          min(24, ks.size)).astype(int)])
+            sy = max(1, v_ta.shape[2] // 64)
+            sx = max(1, v_ta.shape[3] // 64)
+            scale = temperature_scale(getattr(v_ta, "units", None), "ta",
+                                      dict(cfg["temperature_units"] or {}))
+
+            def _read(v):
+                a = np.ma.masked_invalid(
+                    v[0, ks, ::sy, ::sx]).astype("f8")
+                return np.ma.masked_where(np.abs(a + 9999.0) < 1e-3, a)
+
+            ta, th = _read(v_ta), _read(v_th)
+    except (OSError, TemperatureUnitError) as exc:
+        warning("[static] basic state not cross-checked against {}: {}",
+                cfg.disp(path), exc)
+        return
+
+    if scale == "C":
+        ta = ta + 273.15
+    pi_bar = np.ma.masked_where(th < 100.0, ta / th).mean(
+        axis=(1, 2)).filled(np.nan)
+    fit = fit_basic_state(z[ks], pi_bar)
+    if (fit is None or fit[2] > 0.01 or not 150.0 < fit[1] < 400.0
+            or not 50000.0 < fit[0] < 110000.0):
+        warning("[static] ta / theta in {} does not follow a PALM basic "
+                "state{} - the surface_pressure / pt_surface above are used "
+                "unchecked.", cfg.disp(path),
+                "" if fit is None else " (residual {:.3f} K)".format(fit[2]))
+        return
+    p_fit, th_fit, resid = fit
+
+    p_s, th = cfg["surface_pressure"], cfg["pt_surface"]
+    zz = np.array([0.0, float(z[ks[-1]])])
+    dT = float(np.max(np.abs(exner_basic_state(zz, p_s, th)
+                             - exner_basic_state(zz, p_fit, th_fit)))) \
+        * th_fit
+    if dT <= BASIC_STATE_TOL_K:
+        info("[static] basic state confirmed by ta / theta in {}: {:.2f} "
+             "hPa, {:.2f} K (fit residual {:.4f} K, agreement {:.3f} K).",
+             cfg.disp(path), p_fit / 100.0, th_fit, resid, dT)
+        return
+    if explicit["surface_pressure"] or explicit["pt_surface"]:
+        warning("[static] the configured basic state ({:.2f} hPa, {:.2f} K) "
+                "differs from what PALM used according to ta / theta in {} "
+                "({:.2f} hPa, {:.2f} K) by up to {:.2f} K in derived "
+                "temperatures. Keeping the config values; remove them to use "
+                "PALM's.", p_s / 100.0, th, cfg.disp(path), p_fit / 100.0,
+                th_fit, dT)
+        return
+    warning("[static] the resolved basic state ({:.2f} hPa, {:.2f} K) is not "
+            "what PALM used: ta / theta in {} gives {:.2f} hPa, {:.2f} K "
+            "(fit residual {:.4f} K). Using the fit - it would otherwise "
+            "shift derived temperatures by up to {:.2f} K.", p_s / 100.0, th,
+            cfg.disp(path), p_fit / 100.0, th_fit, resid, dT)
+    cfg.set_basic_state(p_fit, th_fit)
 
 
 # ------------------------------
@@ -213,7 +450,7 @@ def process_static_driver(cfg):
         raise RuntimeError("nz/dz not found in p3d and not set in config.")
     g.nz, g.dz = int(nz), float(dz)
 
-    cfg.resolve_surface_pressure(g.p3d)
+    resolve_basic_state(cfg, g.p3d)
 
     with Dataset(cfg.resolve(dom["static_driver"]), "r") as nc:
         x = np.asarray(nc.variables["x"][:])

@@ -28,8 +28,8 @@ from ..descriptions import write_gpkg_descriptions, write_with_aliases
 from ..log import debug, get_logger, info, warning
 from .georef import (check_product, check_raw_input, require_variables,
                      select_times)
-from .thermo import convert_temperature, exner_simple, is_celsius_exempt, \
-    is_temperature, temperature_scale, theta_to_ta
+from .thermo import convert_temperature, exner_basic_state, \
+    is_celsius_exempt, is_temperature, temperature_scale, theta_to_ta
 from .qgis_style import embed_gpkg_style, vector_qml, write_sidecar
 
 log = get_logger()
@@ -62,22 +62,26 @@ def _bounds_mask(cfg, xs, ys):
 # ------------------------------
 # 2. OUTPUT VARIABLE LIST
 # ------------------------------
-# PALM naming: `t_surf` is the actual surface (skin) temperature, while
-# `theta_surface` / `theta_surf` is the surface POTENTIAL temperature.
-# Both spellings of the potential form occur depending on PALM version and
-# output block, so both are accepted.
-SURF_ACTUAL = "t_surf"
+# `t_surface` is the actual surface (skin) temperature, named to match
+# `theta_surface`, the surface POTENTIAL temperature. Both spellings of the
+# potential form occur depending on PALM version and output block, so both
+# are accepted; a file's own actual surface temperature is recognised under
+# either `t_surface` or the older `t_surf`, and is always WRITTEN as
+# `t_surface` (palm2gis wrote `t_surf` up to 0.21).
+SURF_ACTUAL = "t_surface"
+SURF_ACTUAL_NATIVE = ("t_surface", "t_surf")
 SURF_POTENTIAL = ("theta_surface", "theta_surf")
 
 
 def output_vars(sf, available=None, verbose=False):
     """(output name, source variable, derive?) for every surface product.
 
-    With surfaces.derive_t_surf the actual SURFACE temperature `t_surf` is
-    ENSURED: if the file already holds it, PALM's own value is used as-is;
-    only when it is absent is it derived from the surface potential
-    temperature. The same list drives every element layer, so a field is never present in one product and missing
-    from another.
+    With surfaces.derive_t_surface the actual SURFACE temperature
+    `t_surface` is ENSURED: if the file already holds it (as `t_surface` or
+    `t_surf`), PALM's own value is used as-is; only when it is absent is it
+    derived from the surface potential temperature. The same list drives
+    every element layer, so a field is never present in one product and
+    missing from another.
 
     `available` is the set of variable names in the source file. Listed
     variables that are missing but present under the other accepted
@@ -89,34 +93,36 @@ def output_vars(sf, available=None, verbose=False):
     for var in sf["variables"]:
         src = var
         if have and var not in have:
-            alias = next((a for a in SURF_POTENTIAL
-                          if a != var and a in have), None)
-            if var in SURF_POTENTIAL and alias:
-                if verbose:
-                    warning("[surfaces] '{}' not in the file; using '{}'.",
-                            var, alias)
-                src = alias
+            for group in (SURF_POTENTIAL, SURF_ACTUAL_NATIVE):
+                alias = next((a for a in group if a != var and a in have),
+                             None)
+                if var in group and alias:
+                    if verbose:
+                        warning("[surfaces] '{}' not in the file; using "
+                                "'{}'.", var, alias)
+                    src = alias
+                    break
         out.append((var, src, False))
         names.append(var)
 
-    if not sf["derive_t_surf"]:
+    if not sf["derive_t_surface"]:
         return out
 
     if SURF_ACTUAL in names:
         return out                       # user asked for it explicitly
-    if have and SURF_ACTUAL in have:
+    native = next((a for a in SURF_ACTUAL_NATIVE if a in have), None)
+    if native:
         if verbose:
             info("[surfaces] the file holds '{}' - using PALM's own "
-                 "surface temperature instead of deriving it.",
-                 SURF_ACTUAL)
-        out.append((SURF_ACTUAL, SURF_ACTUAL, False))
+                 "surface temperature instead of deriving it.", native)
+        out.append((SURF_ACTUAL, native, False))
         return out
 
     src = next((v for _n, v, _d in out if v in SURF_POTENTIAL), None)
     if src is None:
         if verbose:
-            warning("[surfaces] derive_t_surf is on but neither '{}' nor a "
-                    "surface potential temperature ({}) is available.",
+            warning("[surfaces] derive_t_surface is on but neither '{}' nor "
+                    "a surface potential temperature ({}) is available.",
                     SURF_ACTUAL, ", ".join(SURF_POTENTIAL))
         return out
     out.append((SURF_ACTUAL, src, True))
@@ -136,7 +142,7 @@ def _derive_values(cfg, vals, z_elem, derive, name=None, src_units=None):
     Celsius variables; see thermo.temperature_scale.
 
     NOTE `z_elem` is height above the DOMAIN BASE, not above sea level.
-    exner_simple pairs it with cfg["surface_pressure"], defined as the
+    exner_basic_state pairs it with cfg["surface_pressure"], defined as the
     pressure at the model's z = 0. Passing absolute (origin_z-shifted)
     heights here would put a second, larger error on every derived
     temperature.
@@ -145,9 +151,10 @@ def _derive_values(cfg, vals, z_elem, derive, name=None, src_units=None):
     if derive:
         good = np.isfinite(vals) & (vals != FILL)
         if good.any():
-            pi = exner_simple(z_elem,
-                              theta_ref=float(np.nanmean(vals[good])),
-                              p_surface=cfg["surface_pressure"])
+            # PALM's own basic state: PALM made theta_surface from t_surface
+            # with exactly this Exner function, so this inverts it.
+            pi = exner_basic_state(z_elem, cfg["surface_pressure"],
+                                   cfg["pt_surface"])
             out = np.array(vals, dtype="f8", copy=True)
             out[good] = theta_to_ta(vals[good], pi[good])
     if name is None or not is_temperature(name) or is_celsius_exempt(name):
@@ -524,7 +531,7 @@ def stage_surfaces(cfg, grid):
     src_path = cfg.resolve(sf["file_from"])
 
     # Read only the header first: which variables exist decides the output
-    # names (whether `t_surf` is copied or derived), and that has to be
+    # names (whether `t_surface` is copied or derived), and that has to be
     # settled before the overwrite check picks the files to write.
     with Dataset(src_path, "r") as nc:
         check_product(nc, "surfaces", sf["file_from"])
