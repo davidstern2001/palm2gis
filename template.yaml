@@ -170,6 +170,9 @@ canopy:
     #voxel_drop_k0: true         # drop z = 0 so vertical spacing is uniform
     #multipatch_split: 2000000   # rows before the .shp splits per timestep
     #canopy_file_from: null      # LAD source; default input.static_driver
+    #netcdf_crs: wkt             # wkt: ArcGIS shows the EPSG WKID (e.g.
+    #                            #   32633); cf: also CF grid_mapping params
+    #                            #   for xarray, ArcGIS then shows "Custom"
     #stages: [voxel, surfaces, wind, canopy]   # run order
     # Record indices instead of region.time_from / time_to (per file):
     #skip_times: 0

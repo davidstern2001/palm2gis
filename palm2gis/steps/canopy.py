@@ -200,7 +200,8 @@ def stage_canopy(cfg, grid):
         tv.long_name = ("nominal time of a static field (the canopy "
                         "does not vary in time)")
 
-        gm = write_crs_var(fout, grid.crs)
+        gm = write_crs_var(fout, grid.crs,
+                           cfg["crs"]["netcdf_attributes"])
         for name, (long_name, cut) in sorted(vols.items()):
             ov = fout.createVariable(name, "f4",
                                      ("time", "z", "y", "x"),

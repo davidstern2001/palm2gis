@@ -274,6 +274,11 @@ def verify_outputs(out):
         check("esri_pe_string" in nc.ncattrs(),
               "voxel: global Esri PE string (read by the voxel layer)",
               failures)
+        check("grid_mapping_name" not in nc["crs"].ncattrs()
+              and "AUTHORITY[\"EPSG\",\"32633\"]" in nc["crs"].crs_wkt
+              and nc["crs"].EPSG_code == "EPSG:32633",
+              "voxel: crs holds WKT with EPSG authority, no CF params "
+              "(ArcGIS then reads the WKID)", failures)
         check(all(str(nc["crs"].getncattr(a)).isascii()
                   and "ENSEMBLE" not in str(nc["crs"].getncattr(a))
                   for a in ("spatial_ref", "crs_wkt", "esri_pe_string")),
@@ -1268,6 +1273,17 @@ advanced:
         check(rc == 0 and "u" not in nc.variables
               and _np.ma.allclose(nc["speed_3d"][:], ref["speed_3d"][:]),
               "voxel: speed_3d alone is written without u, v, w", failures)
+    cf_cfg = tmp / "config_cf.yaml"
+    cf_cfg.write_text(sp_only.read_text()
+                      .replace("./out_speed_only", "./out_cf")
+                      .replace("advanced:", "advanced:\n    netcdf_crs: cf", 1))
+    rc = pipeline_main(["-c", str(cf_cfg), "--stages", "voxel"])
+    with Dataset(tmp / "out_cf" / "test_voxel.nc") as nc:
+        check(rc == 0
+              and nc["crs"].grid_mapping_name == "transverse_mercator"
+              and "crs_wkt" in nc["crs"].ncattrs(),
+              "voxel: advanced.netcdf_crs: cf adds the CF parameters",
+              failures)
     old_sp = Config(str(sp_only))
     check(old_sp["voxel"]["derive_speed_3d"] is True
           and "speed_3d" not in old_sp["voxel"]["scalars"]

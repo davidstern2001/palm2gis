@@ -47,6 +47,7 @@ SCHEMA = {
                  "temperature_units": None, "qgis_styles": None,
                  "qgis_styles_3d": None, "voxel_drop_k0": None,
                  "multipatch_split": None, "canopy_file_from": None,
+                 "netcdf_crs": None,
                  "skip_times": None, "n_times": None, "time_end": None,
                  "time_step": None, "time_start": None, "stages": None},
 }
@@ -229,6 +230,7 @@ def translate(user):
     _set(out, "domain", "p3d", inp.get("p3d"))
     _set(out, "domain", "dynamic_driver", inp.get("dynamic_driver"))
     _set(out, "crs", "palm", inp.get("crs"))
+    _set(out, "crs", "netcdf_attributes", adv.get("netcdf_crs"))
     _number(adv.get("nz"), "advanced.nz", 1, integer=True)
     _number(adv.get("dz"), "advanced.dz", 0)
     for key in ("nz", "dz", "origin_time", "origin_z"):

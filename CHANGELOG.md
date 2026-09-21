@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.24.0
+
+**netCDF CRS recognised by ArcGIS Pro (WKID instead of "Custom")**
+
+ArcGIS Pro reads CF grid_mapping parameters before any WKT attribute and
+builds a nameless custom CRS from them (no name, EPSG code or datum in
+CF). The `crs` variable of the voxel, wind and canopy netCDFs now holds
+WKT only by default (`crs_wkt`, `spatial_ref`, `esri_pe_string`, new
+`EPSG_code`), so ArcGIS reads `crs_wkt` and shows the EPSG WKID.
+A CRS given as a PROJ string that pyproj identifies as an EPSG code is
+written from that EPSG definition, so its WKT carries the authority too.
+`advanced.netcdf_crs: cf` (legacy: `crs.netcdf_attributes: cf`) restores
+the CF parameters. The WGS 84 datum-shift warning now fires only in `cf`
+mode, the only one where ArcGIS assumes WGS 1984.
+
 ## 0.23.0
 
 **3D wind speed in the voxel output**

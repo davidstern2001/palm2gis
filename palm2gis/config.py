@@ -40,6 +40,18 @@ DEFAULTS = {
         # is written in it (absolute coordinates - no manual shifting in
         # ArcGIS/QGIS).
         "palm": "EPSG:32633",
+        # How the grid_mapping variable of every netCDF output (voxel,
+        # wind, canopy) carries the CRS:
+        #   "wkt" - WKT only (crs_wkt, spatial_ref, esri_pe_string,
+        #           EPSG_code). ArcGIS Pro reads CF grid_mapping parameters
+        #           BEFORE any WKT, and CF has no name, EPSG code or datum,
+        #           so with them present it shows a nameless "Custom"
+        #           Transverse_Mercator instead of WKID 32633. Leaving them
+        #           out lets it read crs_wkt and recognise the WKID.
+        #   "cf"  - also the CF parameters (grid_mapping_name, ...), for
+        #           CF-only readers (xarray/cf-xarray); ArcGIS then shows a
+        #           custom CRS with the same parameters.
+        "netcdf_attributes": "wkt",
     },
     "domain": {
         "static_driver": None,     # [required] static driver nc file
@@ -588,6 +600,11 @@ class Config:
             if stage not in STAGES:
                 raise ConfigError(f"Unknown stage in stages: {stage} "
                                   f"(known: {', '.join(STAGES)}).")
+
+        mode = c["crs"]["netcdf_attributes"]
+        if mode not in ("wkt", "cf"):
+            raise ConfigError(f"crs.netcdf_attributes must be 'wkt' or "
+                              f"'cf', got {mode!r}.")
 
         if c["voxel"]["enabled"]:
             for key in ("file_from", "file_to"):

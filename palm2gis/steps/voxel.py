@@ -24,6 +24,7 @@ By default the k=0 level (z = 0) is dropped so vertical spacing is uniform
 
 import numpy as np
 from netCDF4 import Dataset
+from pyproj import CRS
 
 from ..descriptions import long_name
 from ..log import debug, get_logger, info, warning
@@ -92,49 +93,66 @@ def destagger(nc, var, it, nz0, nzmax, ny0, nymax, nx0, nxmax):
 # ------------------------------
 # 2. CF / CRS METADATA
 # ------------------------------
-def write_crs_var(fout, crs):
-    """Write a grid_mapping variable ArcGIS and GDAL both understand."""
+def write_crs_var(fout, crs, mode="wkt"):
+    """Write a grid_mapping variable ArcGIS and GDAL both understand.
+
+    mode "wkt" writes the CRS as WKT only; "cf" also writes the CF
+    grid_mapping parameters (see crs.netcdf_attributes in config.py).
+    """
     cv = fout.createVariable("crs", "i4")
+    # A CRS given as a PROJ string (or bare WKT) carries no EPSG code, so
+    # its WKT has no AUTHORITY and ArcGIS cannot find the WKID. When pyproj
+    # identifies it as an EPSG CRS, write that definition instead.
+    epsg = crs.to_epsg()
+    if epsg:
+        crs = CRS.from_epsg(epsg)
     cf = crs.to_cf()
-    for k, v in cf.items():
-        if k == "crs_wkt":
-            continue
-        try:
-            cv.setncattr(k, v)
-        except TypeError:
-            pass
 
-    # CF-only readers build the spatial reference from grid_mapping_name
-    # and its parameters. A CRS pyproj cannot express in CF (Krovak /
-    # S-JTSK EPSG:5514, for one) has none; ArcGIS still gets it from the
-    # global esri_pe_string written below.
-    if "grid_mapping_name" not in cf:
-        info("[crs] {} has no CF grid mapping - CF-only readers will not "
-             "recognise it; ArcGIS reads the global esri_pe_string and "
-             "GDAL/QGIS read spatial_ref.", crs.name)
+    if mode == "cf":
+        # ArcGIS Pro ranks the CF parameters above every WKT attribute
+        # (grid_mapping > srid > crs_wkt > EPSG_code > proj4_parms >
+        # spatial_ref > esri_pe_string). CF carries no name, EPSG code or
+        # datum, so ArcGIS builds a nameless custom CRS on an assumed
+        # WGS 1984 from them.
+        for k, v in cf.items():
+            if k == "crs_wkt":
+                continue
+            try:
+                cv.setncattr(k, v)
+            except TypeError:
+                pass
+        # A CRS pyproj cannot express in CF (Krovak / S-JTSK EPSG:5514,
+        # for one) has no CF parameters; ArcGIS falls back to the WKT.
+        if "grid_mapping_name" not in cf:
+            info("[crs] {} has no CF grid mapping - CF-only readers will "
+                 "not recognise it; ArcGIS and GDAL/QGIS read the WKT.",
+                 crs.name)
+        # The WGS 1984 assumption only bites when ArcGIS reads CF, so a
+        # non-WGS84 datum silently shifts the data. EPSG names the WGS 84
+        # datum several ways; none of them should warn.
+        datum = (crs.datum.name if crs.datum is not None else "")
+        _d = datum.lower().replace("_", " ")
+        is_wgs84 = "wgs 84" in _d or "world geodetic system 1984" in _d
+        if datum and not is_wgs84 and "grid_mapping_name" in cf:
+            warning("[crs] datum is '{}', not WGS 84. ArcGIS assumes WGS "
+                    "1984 for CF grid mappings, so expect a datum shift in "
+                    "ArcGIS Pro; set crs.netcdf_attributes: wkt to avoid "
+                    "it.", datum)
 
-    # Esri also assumes the WGS 1984 datum for netCDF regardless of what
-    # the file says, so a non-WGS84 datum silently shifts the data.
-    # EPSG names the WGS 84 datum several ways ("WGS 84", "WGS_1984",
-    # "World Geodetic System 1984 ensemble"); all of them are the datum
-    # ArcGIS assumes, so none of them should warn.
-    datum = (crs.datum.name if crs.datum is not None else "")
-    _d = datum.lower().replace("_", " ")
-    is_wgs84 = "wgs 84" in _d or "world geodetic system 1984" in _d
-    if datum and not is_wgs84:
-        warning("[crs] datum is '{}', not WGS 84. ArcGIS assumes WGS 1984 "
-                "for netCDF whatever the file declares, so expect a datum "
-                "shift when this is opened in ArcGIS Pro.", datum)
     # Every WKT is written as ASCII WKT1, which netCDF stores as a classic
     # char attribute. pyproj's default WKT2 carries a USAGE block with a
     # non-ASCII degree sign, so netCDF4 stored it as NC_STRING; together
     # with the WKT2-only ENSEMBLE node that left ArcGIS Pro parsing
     # spatial_ref into an unknown CRS (WKID 0) and reporting it unsupported.
+    # WKT1_GDAL keeps AUTHORITY["EPSG", ...], from which ArcGIS gets the
+    # WKID.
     wkt_esri = _ascii_wkt(crs, "WKT1_ESRI")
     wkt_gdal = _ascii_wkt(crs, "WKT1_GDAL") or wkt_esri
-    cv.spatial_ref = wkt_gdal
     cv.crs_wkt = wkt_gdal
+    cv.spatial_ref = wkt_gdal
     cv.esri_pe_string = wkt_esri
+    if epsg:
+        cv.EPSG_code = f"EPSG:{epsg}"
     # The voxel layer reads esri_pe_string as a GLOBAL attribute; on the
     # grid_mapping variable alone it is not seen.
     fout.setncattr("esri_pe_string", wkt_esri)
@@ -338,7 +356,8 @@ def stage_voxel(cfg, grid):
                 tv.units = "1"
             tv.axis = "T"
 
-            gm = write_crs_var(fout, grid.crs)
+            gm = write_crs_var(fout, grid.crs,
+                               cfg["crs"]["netcdf_attributes"])
 
             # PALM's basic-state Exner function on the output levels: linear
             # in z, fixed for the whole run (see thermo). One profile serves

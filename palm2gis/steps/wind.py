@@ -102,7 +102,8 @@ def _wind_netcdf(cfg, grid, nc, its, times, heights, z, path):
         fout.createDimension("y", y_abs.size)
         fout.createDimension("x", x_abs.size)
 
-        gm = write_crs_var(fout, grid.crs)
+        gm = write_crs_var(fout, grid.crs,
+                           cfg["crs"]["netcdf_attributes"])
 
         xv = fout.createVariable("x", "f8", ("x",))
         xv[:] = x_abs
