@@ -345,9 +345,8 @@ def _elements_multipatch(cfg, grid, nc, its, times, xs, ys, zs, zen, az,
     # feature's geometry intact.
     per_time = bool(split_at) and idx.size * len(its) > split_at
     if per_time:
-        info("[surfaces] {} elements x {} times exceeds "
-             "surfaces.multipatch_split ({}) - writing one shapefile per "
-             "timestep.", idx.size, len(its), split_at)
+        info("[surfaces] {} x {} times > surfaces.multipatch_split ({}) - "
+             "one shapefile per timestep", idx.size, len(its), split_at)
 
     written, frames = [], []
     for n, it, frame in _element_frames(cfg, grid, nc, its, times, xs, ys,
@@ -424,8 +423,8 @@ def _elements_gpkg(cfg, grid, nc, its, times, xs, ys, zs, zen, az, sel,
 
     n_rows = idx.size * len(its)
     if n_rows > 2_000_000:
-        warning("[surfaces] {} will hold {} rows - this will be slow and "
-                "large. Tighten bounds/n_times or disable it.",
+        warning("[surfaces] {} will hold {} rows - slow and large; tighten "
+                "bounds/n_times or disable it.",
                 cfg.disp(path), n_rows)
 
     geoms = [_element_quad(xs[s], ys[s], zs[s], zen[s], az[s], grid)

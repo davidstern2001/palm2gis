@@ -124,9 +124,8 @@ def write_crs_var(fout, crs, mode="wkt"):
         # A CRS pyproj cannot express in CF (Krovak / S-JTSK EPSG:5514,
         # for one) has no CF parameters; ArcGIS falls back to the WKT.
         if "grid_mapping_name" not in cf:
-            info("[crs] {} has no CF grid mapping - CF-only readers will "
-                 "not recognise it; ArcGIS and GDAL/QGIS read the WKT.",
-                 crs.name)
+            info("[crs] {} has no CF grid mapping - readers must use the "
+                 "WKT (ArcGIS, GDAL and QGIS do).", crs.name)
         # The WGS 1984 assumption only bites when ArcGIS reads CF, so a
         # non-WGS84 datum silently shifts the data. EPSG names the WGS 84
         # datum several ways; none of them should warn.
@@ -134,10 +133,9 @@ def write_crs_var(fout, crs, mode="wkt"):
         _d = datum.lower().replace("_", " ")
         is_wgs84 = "wgs 84" in _d or "world geodetic system 1984" in _d
         if datum and not is_wgs84 and "grid_mapping_name" in cf:
-            warning("[crs] datum is '{}', not WGS 84. ArcGIS assumes WGS "
-                    "1984 for CF grid mappings, so expect a datum shift in "
-                    "ArcGIS Pro; set crs.netcdf_attributes: wkt to avoid "
-                    "it.", datum)
+            # ArcGIS assumes WGS 1984 for CF grid mappings.
+            warning("[crs] datum '{}' is not WGS 84 - ArcGIS Pro will shift "
+                    "it; set crs.netcdf_attributes: wkt.", datum)
 
     # Every WKT is written as ASCII WKT1, which netCDF stores as a classic
     # char attribute. pyproj's default WKT2 carries a USAGE block with a
@@ -367,11 +365,10 @@ def stage_voxel(cfg, grid):
                 p_s, th_ref = cfg["surface_pressure"], cfg["pt_surface"]
                 pi_col = exner_basic_state(z_rel, p_s, th_ref)
                 pi = pi_col[:, None, None]
-                info("[voxel] PALM basic state: p_s = {:.2f} hPa at z = 0, "
-                     "theta_ref = {:.2f} K -> Exner {:.5f} at {:.0f} m asl, "
-                     "{:.5f} at {:.0f} m asl.", p_s / 100.0, th_ref,
-                     float(pi_col[0]), float(z_out[0]), float(pi_col[-1]),
-                     float(z_out[-1]))
+                debug("[voxel] Exner {:.5f} .. {:.5f} over {:.0f} .. {:.0f} "
+                      "m asl ({:.2f} hPa, {:.2f} K)", float(pi_col[0]),
+                      float(pi_col[-1]), float(z_out[0]), float(z_out[-1]),
+                      p_s / 100.0, th_ref)
 
             p_col = q_factor = ta_scale = None
             if derive_ah:
@@ -384,12 +381,11 @@ def stage_voxel(cfg, grid):
                     ta_scale = temperature_scale(
                         getattr(nc.variables["ta"], "units", None), "ta",
                         dict(cfg["temperature_units"] or {}))
-                info("[voxel] deriving ah from q ({}): p = {:.0f} Pa at "
-                     "z = {:.0f} m, {:.0f} Pa at {:.0f} m.",
+                info("[voxel] deriving ah from q ({}): p {:.0f} .. {:.0f} Pa "
+                     "over {:.0f} .. {:.0f} m",
                      q_units or "no units, taken as kg/kg",
-                     float(p_col.ravel()[0]), float(z_out[0]),
-                     float(p_col.ravel()[-1]),
-                     float(z_out[-1]))
+                     float(p_col.ravel()[0]), float(p_col.ravel()[-1]),
+                     float(z_out[0]), float(z_out[-1]))
 
             celsius = bool(cfg["celsius"])
             target = "C" if celsius else "K"

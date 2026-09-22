@@ -19,6 +19,7 @@ shared by all stages.
 
 import argparse
 import sys
+import time
 from pathlib import Path
 
 from .config import Config, ConfigError, STAGES
@@ -137,6 +138,7 @@ def main(argv=None):
     ap.add_argument("--log-datetime", action="store_true",
                     help="full date in timestamps (time-only is the default)")
     args = ap.parse_args(argv)
+    t0 = time.monotonic()
 
     verbosity = "debug" if args.verbose else ("warning" if args.quiet
                                               else "info")
@@ -184,8 +186,8 @@ def main(argv=None):
     progress("Reading configuration")
     # Logged once, so every later "wrote ..." line can use a bare filename.
     log.info(f"output dir: {cfg.output_dir}")
-    log.debug(f"Project: {cfg['project']['name']}")
-    log.debug(f"Stages: {' -> '.join(stages)}")
+    log.debug(f"project: {cfg['project']['name']}")
+    log.debug(f"stages: {' -> '.join(stages)}")
 
     if args.dry_run:
         print_plan(cfg, stages)
@@ -222,7 +224,7 @@ def main(argv=None):
                            src=cfg.resolve(src_cfg) if src_cfg else None)
         cfg._state.save()
 
-    progress("palm2gis finished OK")
+    progress("palm2gis finished OK ({:.1f}s)", time.monotonic() - t0)
     return 0
 
 

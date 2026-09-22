@@ -302,9 +302,8 @@ def _migrate_renamed_keys(user):
     sf = user.get("surfaces")
     if isinstance(sf, dict) and isinstance(sf.get("variables"), list) \
             and "t_surf" in sf["variables"]:
-        warning("config: surfaces.variables lists 't_surf', which is now "
-                "written as 't_surface' (matching theta_surface). The old "
-                "name still works for now.")
+        warning("[config] surfaces.variables: 't_surf' is now 't_surface' "
+                "- the old name still works for now.")
         sf["variables"] = ["t_surface" if v == "t_surf" else v
                            for v in sf["variables"]]
     for section, renames in _RENAMED_KEYS.items():
@@ -315,13 +314,10 @@ def _migrate_renamed_keys(user):
             if old not in block:
                 continue
             if new in block:
-                warning("config: {}.{} is deprecated and {}.{} is also "
-                        "set - using {}.{}.",
-                        section, old, section, new, section, new)
+                warning("[config] {}.{} and {}.{} are both set - using "
+                        "{}.{}.", section, old, section, new, section, new)
             else:
-                warning("config: {}.{} has been renamed to {}.{}. It "
-                        "derives t_surface, a SURFACE temperature; `ta` is "
-                        "PALM's true AIR temperature. The old name still "
+                warning("[config] {}.{} is now {}.{} - the old name still "
                         "works for now.", section, old, section, new)
                 block[new] = block[old]
             block.pop(old)
@@ -347,8 +343,8 @@ def _drop_removed_keys(user):
             if key not in block:
                 continue
             if block.pop(key):
-                warning("config: {}.{} was removed in 0.19.0 and is "
-                        "ignored - that output is no longer produced.",
+                warning("[config] {}.{} was removed in 0.19.0 and is "
+                        "ignored.",
                         section, key)
 
 
@@ -427,7 +423,7 @@ class Config:
             from .log import set_message_names
             set_message_names(to_new_names)
             for note in notes:
-                info("config: {}", note)
+                info("[config] {}", note)
             self.layout = "new"
         else:
             from .log import set_message_names

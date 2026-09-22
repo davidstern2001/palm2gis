@@ -67,9 +67,8 @@ def stage_canopy(cfg, grid):
 
     with Dataset(src, "r") as nc:
         if "lad" not in nc.variables:
-            warning("[canopy] no 'lad' in {} - nothing to convert. Trees "
-                    "may be described only by tree_id / vegetation_type in "
-                    "this static driver.", cfg.disp(src))
+            warning("[canopy] no 'lad' in {} - nothing to convert.",
+                    cfg.disp(src))
             return
         zlad = (np.asarray(nc.variables["zlad"][:])
                 if "zlad" in nc.variables else None)

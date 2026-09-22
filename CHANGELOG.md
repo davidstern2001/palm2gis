@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.24.1
+
+**Logging**
+
+- Long warnings shortened to one line: the fact and the fix. The
+  background (error magnitudes, why ArcGIS misreads a datum, why record
+  indices differ between stages) moved into code comments; secondary
+  numbers (fit residual, Exner profile, CRS string) moved to debug.
+- `config:` messages are tagged `[config]`, PROJ repair messages `[proj]`.
+- The final line reports the run time: `palm2gis finished OK (12.3s)`.
+- The same style is now used by palm_preproc and palm_postproc.
+
 ## 0.24.0
 
 **netCDF CRS recognised by ArcGIS Pro (WKID instead of "Custom")**

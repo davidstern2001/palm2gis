@@ -318,9 +318,8 @@ def translate(user):
         if not inp.get("surface_data"):
             raise LayoutError("surfaces needs input.surface_data.")
         if "t_surf" in variables:
-            notes.append("surfaces.variables: 't_surf' is now written as "
-                         "'t_surface' (matching theta_surface) - rename it "
-                         "in the config.")
+            notes.append("surfaces.variables: 't_surf' is now 't_surface' "
+                         "- rename it in the config.")
             variables = ["t_surface" if v == "t_surf" else v
                          for v in variables]
             variables = list(dict.fromkeys(variables))

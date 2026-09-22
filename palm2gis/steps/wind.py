@@ -43,9 +43,9 @@ def _warn_above_top(inside, z):
     for h, ok in inside.items():
         n_out = int((~ok).sum())
         if n_out:
-            warning("[wind] {} of {} columns: {:g} m above the surface is "
-                    "above the file's top level ({:g} m) - written as "
-                    "NoData.", n_out, ok.size, h, float(z[-1]))
+            warning("[wind] {} of {} columns: {:g} m AGL is above the top "
+                    "level ({:g} m) - NoData.", n_out, ok.size, h,
+                    float(z[-1]))
 
 
 
@@ -181,9 +181,8 @@ def _wind_netcdf(cfg, grid, nc, its, times, heights, z, path):
     info("[wind] wrote {}: {} x {} x {} x {} (t,height,y,x), "
          "u, v, w, speed, dir_met", cfg.disp(path), len(its),
          len(heights), y_abs.size, x_abs.size)
-    debug("[wind] ArcGIS Pro: Add Multidimensional Raster Layer, tick two "
-          "variables, Output Configuration = Vector Field (U-V) or "
-          "(Magnitude-Direction).")
+    debug("[wind] ArcGIS Pro: Add Multidimensional Raster Layer as a "
+          "Vector Field")
 
 
 # ------------------------------

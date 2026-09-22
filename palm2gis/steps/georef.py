@@ -223,10 +223,9 @@ def _hpa_to_pa(raw, where):
     say so, because PALM itself would have read it as hPa."""
     raw = float(raw)
     if raw > 2000.0:
-        warning("[static] {} surface_pressure = {:g} looks like Pa, but PALM "
-                "reads that key in hPa (and would have used {:g} Pa). Taking "
-                "it as {:.0f} Pa here - check the namelist.",
-                where, raw, raw * 100.0, raw)
+        # PALM itself would have read raw * 100 Pa.
+        warning("[static] {} surface_pressure = {:g} looks like Pa, not hPa - "
+                "taking it as {:.0f} Pa; check the namelist.", where, raw, raw)
         return raw
     return raw * 100.0
 
@@ -292,22 +291,20 @@ def resolve_basic_state(cfg, p3d):
         p_s, p_src = float(cfg["surface_pressure"]), "the config"
     else:
         p_s = _dynamic_surface_pressure(dyn_path) if dyn_path else None
-        p_src = "dynamic driver {} ({}[0])".format(
-            cfg_disp_path(dyn_path), DYN_PRESSURE_VAR)
+        p_src = "dynamic driver {}".format(cfg_disp_path(dyn_path))
         if p_s is None and own.get("surface_pressure") is not None:
             p_s = _hpa_to_pa(own["surface_pressure"], "p3d")
             p_src = "p3d {}".format(cfg_disp_path(p3d_path))
         if p_s is None and parent.get("surface_pressure") is not None:
             p_s = _hpa_to_pa(parent["surface_pressure"], "parent p3d")
-            p_src = "parent p3d {} (child {} inherits it)".format(
-                cfg_disp_path(parent_path), child)
+            p_src = "parent p3d {}".format(cfg_disp_path(parent_path))
         if p_s is None:
             p_s, p_src = P_SURFACE_DEFAULT, "PALM's default"
-            warning("[static] surface_pressure found in no dynamic driver, "
-                    "p3d or parent p3d - assuming PALM's default {:.2f} hPa. "
-                    "Derived ta / t_surface / ah are off by ~0.85 K / ~1 % "
-                    "per 10 hPa if the run used something else; set "
-                    "surface_pressure in the config.", p_s / 100.0)
+            # A wrong value shifts derived ta / t_surface / ah by about
+            # 0.85 K / 1 % per 10 hPa.
+            warning("[static] surface_pressure not found - assuming PALM's "
+                    "default {:.2f} hPa; set it in the config if the run "
+                    "differs.", p_s / 100.0)
 
     # -- reference potential temperature -------------------------------------
     if explicit["pt_surface"]:
@@ -320,13 +317,14 @@ def resolve_basic_state(cfg, p3d):
             cfg_disp_path(parent_path))
     else:
         th, th_src = PT_SURFACE_DEFAULT, "PALM's default"
-        warning("[static] pt_surface found in no p3d - assuming PALM's "
-                "default {:.0f} K. Derived ta / t_surface drift by ~0.1 K per "
-                "km per 10 K of error; set pt_surface in the config.", th)
+        # A wrong value drifts derived ta / t_surface by about 0.1 K per km
+        # per 10 K of error.
+        warning("[static] pt_surface not found - assuming PALM's default "
+                "{:.0f} K; set it in the config if the run differs.", th)
 
     cfg.set_basic_state(p_s, th)
-    info("[static] PALM basic state{}: surface_pressure = {:.2f} hPa (from "
-         "{}), pt_surface = {:.2f} K (from {}).",
+    info("[static] basic state{}: surface_pressure {:.2f} hPa ({}), "
+         "pt_surface {:.2f} K ({})",
          " of child {}".format(child) if child else "", p_s / 100.0, p_src,
          th, th_src)
     calibrate_basic_state(cfg, explicit)
@@ -356,7 +354,7 @@ def calibrate_basic_state(cfg, explicit=None):
         with Dataset(path, "r") as nc:
             if not {"ta", "theta", "zu_3d"} <= set(nc.variables):
                 debug("[static] {} lacks ta, theta or zu_3d - basic state "
-                      "not cross-checked.", cfg.disp(path))
+                      "not cross-checked.", cfg_disp_path(path))
                 return
             v_ta, v_th = nc.variables["ta"], nc.variables["theta"]
             if v_ta.ndim != 4 or v_ta.shape != v_th.shape:
@@ -380,7 +378,7 @@ def calibrate_basic_state(cfg, explicit=None):
             ta, th = _read(v_ta), _read(v_th)
     except (OSError, TemperatureUnitError) as exc:
         warning("[static] basic state not cross-checked against {}: {}",
-                cfg.disp(path), exc)
+                cfg_disp_path(path), exc)
         return
 
     if scale == "C":
@@ -390,9 +388,8 @@ def calibrate_basic_state(cfg, explicit=None):
     fit = fit_basic_state(z[ks], pi_bar)
     if (fit is None or fit[2] > 0.01 or not 150.0 < fit[1] < 400.0
             or not 50000.0 < fit[0] < 110000.0):
-        warning("[static] ta / theta in {} does not follow a PALM basic "
-                "state{} - the surface_pressure / pt_surface above are used "
-                "unchecked.", cfg.disp(path),
+        warning("[static] ta / theta in {} fit no PALM basic state{} - "
+                "basic state left unchecked.", cfg_disp_path(path),
                 "" if fit is None else " (residual {:.3f} K)".format(fit[2]))
         return
     p_fit, th_fit, resid = fit
@@ -403,23 +400,21 @@ def calibrate_basic_state(cfg, explicit=None):
                              - exner_basic_state(zz, p_fit, th_fit)))) \
         * th_fit
     if dT <= BASIC_STATE_TOL_K:
-        info("[static] basic state confirmed by ta / theta in {}: {:.2f} "
-             "hPa, {:.2f} K (fit residual {:.4f} K, agreement {:.3f} K).",
-             cfg.disp(path), p_fit / 100.0, th_fit, resid, dT)
+        info("[static] basic state confirmed by {} (within {:.3f} K)",
+             cfg_disp_path(path), dT)
+        debug("[static] fit: {:.2f} hPa, {:.2f} K, residual {:.4f} K",
+              p_fit / 100.0, th_fit, resid)
         return
     if explicit["surface_pressure"] or explicit["pt_surface"]:
-        warning("[static] the configured basic state ({:.2f} hPa, {:.2f} K) "
-                "differs from what PALM used according to ta / theta in {} "
-                "({:.2f} hPa, {:.2f} K) by up to {:.2f} K in derived "
-                "temperatures. Keeping the config values; remove them to use "
-                "PALM's.", p_s / 100.0, th, cfg.disp(path), p_fit / 100.0,
-                th_fit, dT)
+        warning("[static] configured basic state ({:.2f} hPa, {:.2f} K) is "
+                "up to {:.2f} K off {} ({:.2f} hPa, {:.2f} K) - kept; remove "
+                "it to use PALM's.", p_s / 100.0, th, dT, cfg_disp_path(path),
+                p_fit / 100.0, th_fit)
         return
-    warning("[static] the resolved basic state ({:.2f} hPa, {:.2f} K) is not "
-            "what PALM used: ta / theta in {} gives {:.2f} hPa, {:.2f} K "
-            "(fit residual {:.4f} K). Using the fit - it would otherwise "
-            "shift derived temperatures by up to {:.2f} K.", p_s / 100.0, th,
-            cfg.disp(path), p_fit / 100.0, th_fit, resid, dT)
+    warning("[static] basic state ({:.2f} hPa, {:.2f} K) is up to {:.2f} K "
+            "off {} - using its fit ({:.2f} hPa, {:.2f} K).", p_s / 100.0, th,
+            dT, cfg_disp_path(path), p_fit / 100.0, th_fit)
+    debug("[static] fit residual {:.4f} K", resid)
     cfg.set_basic_state(p_fit, th_fit)
 
 
@@ -511,19 +506,18 @@ def process_static_driver(cfg):
                                            getattr(nc, "origin_time", None))
 
     info("[static] {} x {} x {} pts, d = {}/{}/{} m, origin "
-         "({:.2f}, {:.2f}) {}", g.nx, g.ny, g.nz, g.dx, g.dy, g.dz,
-         g.origin_x, g.origin_y, cfg["crs"]["palm"])
+         "({:.2f}, {:.2f})", g.nx, g.ny, g.nz, g.dx, g.dy, g.dz,
+         g.origin_x, g.origin_y)
+    debug("[static] crs: {}", cfg["crs"]["palm"])
     info("[static] cut x[{}:{}] y[{}:{}] z[{}:{}], t0 = {}",
          g.nx0, g.nxmax, g.ny0, g.nymax, g.nz0, g.nzmax, g.origin_time)
     if g.origin_z:
         info("[static] origin_z = {:.2f} m - z output is height above sea "
              "level.", g.origin_z)
     else:
-        warning("[static] origin_z is 0 (absent or unset in the static "
-                "driver): z output will be height above the DOMAIN BASE, "
-                "not above sea level, and 3D layers will sit too low in "
-                "ArcGIS Pro. Set domain.origin_z if the domain is above "
-                "sea level.")
+        # 3D layers then sit too low in ArcGIS Pro.
+        warning("[static] origin_z is 0 - z is height above the domain base, "
+                "not sea level; set domain.origin_z.")
     return g
 
 
@@ -763,15 +757,14 @@ def select_times(cfg, nc, tag="", grid=None, source=""):
             origin = ("the p3d ({} = {:g} s)".format(src_key, step)
                       if src_key else
                       "bounds.time_start/time_step")
-            warning("{}time variable is all fill - times rebuilt from {}: "
-                    "first record at {:g} s, every {:g} s.",
+            warning("{}time variable is all fill - rebuilt from {}: start "
+                    "{:g} s, every {:g} s.",
                     label, origin, start, step)
         else:
             times = np.full(n_all, np.nan)
-            warning("{}time variable is all fill, and the p3d gives no "
-                    "output interval for this product - labelling by "
-                    "record index (set bounds.time_step to rebuild real "
-                    "times).", label)
+            warning("{}time variable is all fill and no output interval is "
+                    "known - using record indices (set bounds.time_step).",
+                    label)
         good = np.ones(n_all, dtype=bool)
         n_valid = n_all
     else:
@@ -894,11 +887,10 @@ def select_times(cfg, nc, tag="", grid=None, source=""):
             if other == tag:
                 continue
             if hi < o_lo or lo > o_hi:    # no overlap at all
-                warning("{}this window ({} .. {}) does not overlap the one "
-                        "[{}] is converting ({} .. {}) - record indices mean "
-                        "different times in files of unequal output "
-                        "interval. Set bounds.time_from/time_to to pin the "
-                        "same period in every stage.",
+                # Record indices mean different times in files of unequal
+                # output interval.
+                warning("{}window {} .. {} does not overlap [{}] ({} .. {}) - "
+                        "set bounds.time_from/time_to to align the stages.",
                         label, _fmt_stamp(grid, lo), _fmt_stamp(grid, hi),
                         o_tag, _fmt_stamp(grid, o_lo), _fmt_stamp(grid, o_hi))
                 break
@@ -981,15 +973,14 @@ def regularize_times(times, its, grid=None, tag="", source=""):
                   label, step, origin, resid)
         gaps = np.flatnonzero(np.diff(n) != 1)
         if gaps.size:
-            warning("{}{} gap(s) in the selected records (e.g. {:g} s -> "
-                    "{:g} s with a {:g} s interval): ArcGIS Pro will read "
-                    "the time axis as irregular.", label, gaps.size,
+            warning("{}{} gap(s) in the records (e.g. {:g} -> {:g} s, "
+                    "interval {:g} s) - ArcGIS Pro sees an irregular time "
+                    "axis.", label, gaps.size,
                     snapped[gaps[0]], snapped[gaps[0] + 1], step)
         return times
 
-    warning("{}record times are not on a regular interval (steps {:g} .. "
-            "{:g} s) and were written as they are - ArcGIS Pro will read "
-            "the time axis as irregular.", label,
+    warning("{}record times are irregular (steps {:g} .. {:g} s) - ArcGIS "
+            "Pro sees an irregular time axis.", label,
             float(d.min()) if d.size else 0.0,
             float(d.max()) if d.size else 0.0)
     return times
@@ -1101,9 +1092,8 @@ def resolve_z_range(nc, grid, tag, z_coord="zu_3d"):
 
     pre_cut = getattr(nc, "palm_postproc_z_max", None)
     if pre_cut is not None:
-        warning("{}this file was already cut to z <= {} m by "
-                "palm_postproc splitz, so bounds.zmax is resolved against "
-                "the {} levels that survived, not the full model grid.",
+        warning("{}file already cut to z <= {} m by palm_postproc splitz - "
+                "bounds.zmax applies to its {} levels.",
                 label, pre_cut, z_file.size)
 
     if (nz0, nzmax) != (grid.nz0, grid.nzmax):

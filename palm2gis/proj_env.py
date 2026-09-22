@@ -77,14 +77,14 @@ def ensure_proj_data():
     if _proj_works():
         return True
 
-    warning("PROJ cannot resolve EPSG codes - GDAL and its proj.db come "
-            "from different installations. Trying to repoint it.")
+    warning("[proj] PROJ cannot resolve EPSG codes (proj.db from another "
+            "installation) - trying to repoint it.")
 
     try:
         from rasterio._env import (get_proj_data_search_paths,
                                    set_proj_data_search_path)
     except ImportError:
-        warning("This rasterio build offers no PROJ search-path control; "
+        warning("[proj] this rasterio cannot set PROJ search paths - "
                 "rasters may be written without a CRS.")
         return False
 
@@ -93,7 +93,7 @@ def ensure_proj_data():
         original = get_proj_data_search_paths()
     except Exception:
         pass
-    debug("PROJ search paths before repair: {}", original)
+    debug("[proj] search paths before repair: {}", original)
 
     for path in _candidate_dirs():
         try:
@@ -101,11 +101,9 @@ def ensure_proj_data():
         except Exception:
             continue
         if _proj_works():
-            info("PROJ repointed at {} for this run.", path)
-            warning("Fix the environment to make this permanent: install "
-                    "GDAL/rasterio/pyproj from a SINGLE source (all "
-                    "conda-forge, or all pip), and clear any stale "
-                    "PROJ_DATA / PROJ_LIB variable.")
+            info("[proj] repointed at {} for this run.", path)
+            warning("[proj] to fix it for good, install GDAL/rasterio/pyproj "
+                    "from ONE source and clear stale PROJ_DATA / PROJ_LIB.")
             return True
 
     if original:
@@ -113,7 +111,6 @@ def ensure_proj_data():
             set_proj_data_search_path(original[0])
         except Exception:
             pass
-    warning("Could not find a usable proj.db - rasters will be written "
-            "WITHOUT a CRS. Reinstall GDAL/rasterio/pyproj from a single "
-            "source, or point PROJ_DATA at a matching proj.db.")
+    warning("[proj] no usable proj.db - rasters will have NO CRS; install "
+            "GDAL/rasterio/pyproj from one source.")
     return False
