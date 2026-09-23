@@ -308,24 +308,13 @@ def stage_voxel(cfg, grid):
             fout.title = "PALM 3D output for ArcGIS Pro voxel layer"
             fout.source = str(file_from)
 
-            fout.createDimension("x", grid.nxmax - grid.nx0)
-            fout.createDimension("y", grid.nymax - grid.ny0)
+            # Horizontal axes in the output CRS: PALM's own grid, or a
+            # regular grid resampled from it (see reproject).
+            og = grid.reproj.grid()
+            yd, xd = og.dims
+            og.write_axes(fout)
             fout.createDimension("z", z_out.size)
             fout.createDimension("time", len(its))
-
-            xv = fout.createVariable("x", "f8", ("x",))
-            xv[:] = grid.abs_x(
-                np.asarray(nc.variables["x"][grid.nx0:grid.nxmax]))
-            xv.standard_name = "projection_x_coordinate"
-            xv.units = "m"
-            xv.axis = "X"
-
-            yv = fout.createVariable("y", "f8", ("y",))
-            yv[:] = grid.abs_y(
-                np.asarray(nc.variables["y"][grid.ny0:grid.nymax]))
-            yv.standard_name = "projection_y_coordinate"
-            yv.units = "m"
-            yv.axis = "Y"
 
             zv = fout.createVariable("z", "f8", ("z",))
             zv[:] = z_out
@@ -354,7 +343,7 @@ def stage_voxel(cfg, grid):
                 tv.units = "1"
             tv.axis = "T"
 
-            gm = write_crs_var(fout, grid.crs,
+            gm = write_crs_var(fout, grid.reproj.crs,
                                cfg["crs"]["netcdf_attributes"])
 
             # PALM's basic-state Exner function on the output levels: linear
@@ -404,7 +393,7 @@ def stage_voxel(cfg, grid):
                     getattr(src_v, "units", None) if src_v is not None else None,
                     var, overrides)
             for var in out_vars:
-                ov = fout.createVariable(var, "f4", ("time", "z", "y", "x"),
+                ov = fout.createVariable(var, "f4", ("time", "z", yd, xd),
                                          fill_value=FILL, zlib=True,
                                          complevel=4)
                 ov.grid_mapping = gm
@@ -474,6 +463,11 @@ def stage_voxel(cfg, grid):
                                        grid.nx0:grid.nxmax])
             debug("[voxel] terrain mask from '{}': {} cells",
                   mask_src, int(terrain_mask.sum()))
+            # The same mask on the output grid; cells outside the PALM
+            # domain count as masked too. `air` tells the conservative
+            # resampling which PALM cells to average over.
+            mask_out = og.mask(terrain_mask)
+            air = ~terrain_mask
 
             for q, it in enumerate(its):
                 debug("[voxel] time {} ({:.0f} s)", it, times[it])
@@ -486,12 +480,20 @@ def stage_voxel(cfg, grid):
                     if derive_speed:
                         sp = np.sqrt(comp["u"] ** 2 + comp["v"] ** 2
                                      + comp["w"] ** 2)
-                        sp[terrain_mask] = FILL
+                        sp = np.array(og.take(sp, valid=air), copy=True)
+                        sp[mask_out] = FILL
                         fout.variables["speed_3d"][q, ...] = sp
                     if do_velocity:
+                        # Taken onto the output grid and turned from PALM's
+                        # grid axes into the output CRS's east/north before
+                        # any NoData goes in, so a fill value is never
+                        # mixed into a rotated component.
+                        out = {var: og.take(comp[var], np.nan, valid=air)
+                               for var in ("u", "v", "w")}
+                        out["u"], out["v"] = og.rotate(out["u"], out["v"])
                         for var in ("u", "v", "w"):
-                            val = comp[var]
-                            val[terrain_mask] = FILL
+                            val = np.array(out[var], copy=True)
+                            val[mask_out | ~np.isfinite(val)] = FILL
                             fout.variables[var][q, ...] = val
                 for var in scalars:
                     val = np.ma.filled(
@@ -501,7 +503,9 @@ def stage_voxel(cfg, grid):
                     if var in scales:
                         val = convert_temperature(val, scales[var], target,
                                                   fill=FILL)
-                    val[terrain_mask] = FILL
+                    val = np.array(og.take(val, valid=air & (val != FILL)),
+                                   copy=True)
+                    val[mask_out] = FILL
                     fout.variables[var][q, ...] = val
                 if derive_ta:
                     th = np.ma.masked_invalid(np.ma.masked_equal(
@@ -510,7 +514,9 @@ def stage_voxel(cfg, grid):
                                               grid.nx0:grid.nxmax], FILL))
                     ta = np.ma.filled(theta_to_ta(th, pi), FILL)
                     ta = convert_temperature(ta, "K", target, fill=FILL)
-                    ta[terrain_mask] = FILL
+                    ta = np.array(og.take(ta, valid=air & (ta != FILL)),
+                                  copy=True)
+                    ta[mask_out] = FILL
                     fout.variables["ta"][q, ...] = ta
                 if derive_ah:
                     fields = {}
@@ -538,9 +544,11 @@ def stage_voxel(cfg, grid):
                                             "none given"))
                     ah = np.ma.filled(absolute_humidity(qq, t_k, p_col),
                                       FILL)
-                    ah[terrain_mask] = FILL
+                    ah = np.array(og.take(ah, valid=air & (ah != FILL)),
+                                  copy=True)
+                    ah[mask_out] = FILL
                     fout.variables["ah"][q, ...] = ah
 
-    info("[voxel] wrote {}: {} x {} x {} x {} (t,z,y,x), {}",
-         cfg.disp(file_to), len(its), z_out.size,
-         grid.nymax - grid.ny0, grid.nxmax - grid.nx0, ", ".join(out_vars))
+    info("[voxel] wrote {}: {} x {} x {} x {} (t,z,{},{}), {}",
+         cfg.disp(file_to), len(its), z_out.size, og.shape[0], og.shape[1],
+         yd, xd, ", ".join(out_vars))

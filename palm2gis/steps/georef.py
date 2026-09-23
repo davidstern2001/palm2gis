@@ -37,7 +37,7 @@ class Grid:
 
     __slots__ = ("nx", "ny", "nz", "dx", "dy", "dz",
                  "origin_x", "origin_y", "origin_z", "origin_time",
-                 "crs", "crs_raw",
+                 "crs", "crs_raw", "reproj",
                  "zt", "elev", "x_stat", "y_stat", "p3d",
                  "nx0", "nxmax", "ny0", "nymax", "nz0", "nzmax",
                  "zt_min", "zt_max", "zmax_req")
@@ -77,11 +77,16 @@ class Grid:
         c = self.rio_crs_candidates()
         return c[0] if c else None
 
+    # float64 explicitly, in all three. PALM files store x/y/z (and the
+    # surface xs/ys/zs) as float32, and numpy keeps float32 + a Python
+    # float in float32: at a UTM northing of 5.5e6 that resolves only
+    # 0.5 m, so every absolute y was rounded to the nearest half metre and
+    # a 3D wind arrow's y extent with it (a 2 m arrow off by up to ~3 deg).
     def abs_x(self, x_local):
-        return np.asarray(x_local) + self.origin_x
+        return np.asarray(x_local, dtype="f8") + self.origin_x
 
     def abs_y(self, y_local):
-        return np.asarray(y_local) + self.origin_y
+        return np.asarray(y_local, dtype="f8") + self.origin_y
 
     def abs_z(self, z_local):
         """PALM height above the domain base -> height above sea level.
@@ -98,7 +103,7 @@ class Grid:
         larger error on every derived temperature. Keep a relative z for
         those and use this only for output geometry.
         """
-        return np.asarray(z_local) + self.origin_z
+        return np.asarray(z_local, dtype="f8") + self.origin_z
 
     def times_to_datetime(self, seconds, tz_aware=False):
         """Absolute timestamps for PALM's time-in-seconds. Entries that are
@@ -504,6 +509,16 @@ def process_static_driver(cfg):
             else float(getattr(nc, "origin_z", 0.0))
         g.origin_time = _parse_origin_time(dom["origin_time"],
                                            getattr(nc, "origin_time", None))
+
+    # Output CRS mapping. Built after the cut is known, since the
+    # resampled grids of the netCDF outputs cover exactly the cut.
+    from .reproject import Reprojection
+    g.reproj = Reprojection(g, cfg["crs"].get("output"),
+                            cfg["crs"].get("resampling") or "conservative")
+    if not g.reproj.identity:
+        info("[static] output CRS {} - vector layers transformed, gridded "
+             "netCDF resampled ({}).", g.reproj.crs.name,
+             g.reproj.method)
 
     info("[static] {} x {} x {} pts, d = {}/{}/{} m, origin "
          "({:.2f}, {:.2f})", g.nx, g.ny, g.nz, g.dx, g.dy, g.dz,

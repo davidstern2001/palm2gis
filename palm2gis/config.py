@@ -52,6 +52,22 @@ DEFAULTS = {
         #           CF-only readers (xarray/cf-xarray); ArcGIS then shows a
         #           custom CRS with the same parameters.
         "netcdf_attributes": "wkt",
+        # CRS every output is WRITTEN in. null = crs.palm (no change).
+        # Anything else, e.g. "EPSG:4326" for an ArcGIS scene in WGS 84:
+        # vector layers are transformed exactly, gridded netCDF (voxel,
+        # wind, canopy) is resampled by nearest neighbour onto a regular
+        # grid in that CRS, and u/v are rotated to its east/north.
+        "output": None,
+        # How gridded netCDF is resampled when `output` differs from
+        # `palm` (ignored otherwise):
+        #   "conservative" - area-weighted average of the PALM cells each
+        #                    output cell overlaps, over air cells only.
+        #                    PALM values are cell averages, so this keeps
+        #                    means and totals; a cell under half air is
+        #                    NoData.
+        #   "nearest"      - the PALM cell under each output cell centre:
+        #                    values exact, positions within half a cell.
+        "resampling": "conservative",
     },
     "domain": {
         "static_driver": None,     # [required] static driver nc file
@@ -599,6 +615,22 @@ class Config:
             if stage not in STAGES:
                 raise ConfigError(f"Unknown stage in stages: {stage} "
                                   f"(known: {', '.join(STAGES)}).")
+
+        for key in ("palm", "output"):
+            val = c["crs"].get(key)
+            if val is None:
+                continue
+            try:
+                from pyproj import CRS as _CRS
+                _CRS.from_user_input(val)
+            except Exception as exc:
+                raise ConfigError(f"crs.{key}: {val!r} is not a CRS pyproj "
+                                  f"understands ({exc}).")
+
+        if c["crs"].get("resampling") not in ("conservative", "nearest"):
+            raise ConfigError(f"crs.resampling must be 'conservative' or "
+                              f"'nearest', got "
+                              f"{c['crs'].get('resampling')!r}.")
 
         mode = c["crs"]["netcdf_attributes"]
         if mode not in ("wkt", "cf"):

@@ -1363,6 +1363,269 @@ advanced:
 # ------------------------------
 # 7. MAIN
 # ------------------------------
+# ------------------------------
+# 9. OUTPUT CRS (project.output_crs: EPSG:4326)
+# ------------------------------
+def verify_output_crs(tmp, pipeline_main):
+    """Every product in EPSG:4326 for an ArcGIS scene in WGS 84.
+
+    Vector layers must be transformed exactly with z untouched; gridded
+    netCDF resampled onto regular lon/lat axes with no auxiliary
+    coordinates (Esri's voxel requirement); u/v turned from UTM grid axes
+    to true east/north. The synthetic domain sits at ~14.4 E, west of
+    zone 33's central meridian - where Prague is - so the rotation is a
+    real +0.45 degrees, checked against pyproj's meridian convergence.
+    """
+    import geopandas as gpd
+    import numpy as np
+    from netCDF4 import Dataset
+    from pyproj import Geod, Proj, Transformer
+
+    failures = []
+    cfg = tmp / "config_4326.yaml"
+    cfg.write_text(f"""\
+project:
+    name: test
+    output_dir: ./out_4326
+    output_crs: 'EPSG:4326'
+input:
+    static_driver: test_static
+    data_3d: test_3d
+    surface_data: test_surf
+    crs: "{CRS}"
+region:
+    height_above_surface: 10
+voxel:
+    variables: [u, v, w, theta]
+    netcdf:
+        file: '{{name}}_voxel.nc'
+surfaces:
+    variables: [theta_surface]
+    all_elements_gpkg:
+        file: '{{name}}_surfaces.gpkg'
+    all_elements_multipatch:
+        file: '{{name}}_surfaces.shp'
+wind:
+    heights_above_surface: [2.0, 10.0]
+    netcdf:
+        file: '{{name}}_wind.nc'
+        every_nth_column: 2
+    gpkg:
+        file: '{{name}}_wind.gpkg'
+        every_nth_column: 2
+        arrows_3d: true
+canopy:
+    lad_netcdf:
+        file: '{{name}}_lad_3d.nc'
+advanced:
+    grid:
+        nz: {NZ}
+        dz: {DZ}
+""")
+    rc = pipeline_main(["-c", str(cfg), "--overwrite"])
+    check(rc == 0, "output crs: EPSG:4326 run finishes", failures)
+    if rc != 0:
+        return failures
+    out = tmp / "out_4326"
+    to_ll = Transformer.from_crs(CRS, "EPSG:4326", always_xy=True)
+
+    # -- voxel: regular lon/lat, WGS 84, no auxiliary coordinates --------
+    with Dataset(out / "test_voxel.nc") as nc:
+        lon, lat = nc["lon"][:], nc["lat"][:]
+        check(nc["theta"].dimensions == ("time", "z", "lat", "lon")
+              and nc["lon"].units == "degrees_east"
+              and nc["lat"].standard_name == "latitude",
+              "output crs: voxel on (time, z, lat, lon) with CF lon/lat",
+              failures)
+        check(nc["crs"].EPSG_code == "EPSG:4326"
+              and 'AUTHORITY["EPSG","4326"]' in nc["crs"].crs_wkt,
+              "output crs: voxel grid mapping is EPSG:4326", failures)
+        check(not any("coordinates" in nc[v].ncattrs()
+                      for v in nc.variables),
+              "output crs: no auxiliary coordinates (voxel-layer source)",
+              failures)
+        check(np.ptp(np.diff(lon)) < 1e-12 and np.ptp(np.diff(lat)) < 1e-12
+              and np.all(np.diff(lon) > 0) and np.all(np.diff(lat) > 0),
+              "output crs: lon/lat axes regular and ascending", failures)
+        # Native 2 m cells at ~50 N: ~2.8e-5 deg of lon, ~1.8e-5 of lat.
+        check(abs(float(lon[1] - lon[0]) - 2.0 / 71_600) < 2e-6
+              and abs(float(lat[1] - lat[0]) - 2.0 / 111_200) < 1e-6,
+              "output crs: spacing matches the native 2 m cell", failures)
+        th = nc["theta"][0].filled(np.nan)
+        # Building block: local cells 8..11, top at terrain + 8 m. Its
+        # centre (local x = y = 20 m) must be NoData at the ground and
+        # air above the roof - the mask landed in the right place.
+        blon, blat = to_ll.transform(ORIGIN_X + 20.0, ORIGIN_Y + 20.0)
+        i = int(np.argmin(abs(lon - blon)))
+        j = int(np.argmin(abs(lat - blat)))
+        col = th[:, j, i]
+        check(np.isnan(col[0]) and np.isfinite(col[-1]),
+              "output crs: building mask lands on the building", failures)
+        # Air cells only are averaged: every finite theta stays within the
+        # model's own range (300 +- noise), none is a mix with NoData.
+        fin = th[np.isfinite(th)]
+        check(fin.size and 299.0 < fin.min() and fin.max() < 301.0,
+              "output crs: no fill value blended into the average",
+              failures)
+        check(np.isnan(th[:, 0, 0]).all() or np.isnan(th[:, -1, -1]).all()
+              or np.isnan(th[:, 0, -1]).all() or np.isnan(th[:, -1, 0]).all(),
+              "output crs: a corner outside the rotated domain is NoData",
+              failures)
+        u = nc["u"][0].filled(np.nan)
+        v = nc["v"][0].filled(np.nan)
+
+    # -- rotation of u, v ------------------------------------------------
+    # The angle palm2gis turns u/v by must be minus PALM's meridian
+    # convergence at every column (pyproj computes that independently).
+    from palm2gis.config import Config
+    from palm2gis.steps.georef import process_static_driver
+    pg = process_static_driver(Config(str(cfg)))
+    cos_a, sin_a = pg.reproj.rotation()
+    alpha = np.degrees(np.arctan2(sin_a, cos_a))
+    xx, yy = np.meshgrid(pg.abs_x(pg.x_stat), pg.abs_y(pg.y_stat))
+    lo, la = to_ll.transform(xx, yy)
+    gamma = Proj(CRS).get_factors(lo, la).meridian_convergence
+    check(np.max(abs(alpha + gamma)) < 1e-6 and abs(alpha.mean()) > 0.4,
+          f"output crs: u/v turned by the meridian convergence "
+          f"({alpha.mean():+.3f} deg, max error "
+          f"{np.max(abs(alpha + gamma)):.1e})", failures)
+    ug, vg = np.array([2.0]), np.array([0.0])
+    ue, vn = pg.reproj.rotate_at(ug, vg, np.array([0]), np.array([0]))
+    check(abs(np.hypot(ue, vn)[0] - 2.0) < 1e-12 and vn[0] > 0,
+          "output crs: rotation keeps speed; grid-east wind gains a "
+          "northward part west of the central meridian", failures)
+    m = np.isfinite(u) & np.isfinite(v)
+    check(m.any(), "output crs: voxel u/v hold data", failures)
+
+    # -- wind: arrows exact, attributes in the same frame ----------------
+    w3 = gpd.read_file(out / "test_wind.gpkg", layer="wind_3d")
+    pts = gpd.read_file(out / "test_wind.gpkg", layer="wind")
+    check(w3.crs.to_epsg() == 4326 and pts.crs.to_epsg() == 4326
+          and w3.geometry.has_z.all() and not pts.geometry.has_z.any(),
+          "output crs: wind points 2D and arrows 3D, both EPSG:4326",
+          failures)
+    g = w3[w3.speed > 0]
+    c = np.array([np.array(ln.coords) for ln in g.geometry])
+    az, _, _ = Geod(ellps="WGS84").inv(c[:, 0, 0], c[:, 0, 1],
+                                       c[:, 1, 0], c[:, 1, 1])
+    d = (90.0 - az) - np.degrees(np.arctan2(g.v, g.u))
+    d = (d + 180.0) % 360.0 - 180.0
+    check(np.max(abs(d)) < 1e-3,
+          f"output crs: arrow bearing matches rotated u/v "
+          f"(max {np.max(abs(d)):.3f} deg)", failures)
+    check(np.allclose(c[:, 0, 2], g.z, atol=1e-3),
+          "output crs: arrow z unchanged (m above sea level)", failures)
+    with Dataset(out / "test_wind.nc") as nc:
+        check(nc["u"].dimensions == ("time", "height", "lat", "lon")
+              and nc["crs"].EPSG_code == "EPSG:4326",
+              "output crs: wind netCDF on lat/lon in EPSG:4326", failures)
+
+    # -- surfaces: exact transform, z untouched ---------------------------
+    s = gpd.read_file(out / "test_surfaces.gpkg", layer="surfaces")
+    ref = gpd.read_file(tmp / "out_new" / "test_surfaces.gpkg",
+                        layer="surfaces")
+    check(s.crs.to_epsg() == 4326 and len(s) == len(ref),
+          "output crs: surfaces in EPSG:4326, same elements", failures)
+    a = np.array(s.geometry.iloc[0].exterior.coords)
+    b = np.array(ref.geometry.iloc[0].exterior.coords)
+    bx, by = to_ll.transform(b[:, 0], b[:, 1])
+    check(np.allclose(a[:, 0], bx, atol=1e-9)
+          and np.allclose(a[:, 1], by, atol=1e-9)
+          and np.allclose(a[:, 2], b[:, 2]),
+          "output crs: surface vertices = UTM vertices transformed, z same",
+          failures)
+    shp = gpd.read_file(out / "test_surfaces.shp")
+    check(shp.crs is not None and shp.crs.to_epsg() == 4326,
+          "output crs: multipatch .prj is EPSG:4326", failures)
+
+    # -- canopy: total leaf area conserved --------------------------------
+    og = pg.reproj.grid()
+    cell = og._w[2].reshape(og.shape)     # output cell areas, PALM cells
+    with Dataset(out / "test_lad_3d.nc") as nc:
+        lad = nc["lad"][:].filled(0.0).astype("f8")
+        total = float((lad * cell).sum())
+        check(nc["lad"].dimensions == ("time", "z", "lat", "lon")
+              and abs(total - 27 * 0.5) < 1e-6 * 27 * 0.5,
+              f"output crs: conservative remap keeps the total leaf area "
+              f"(relative error {total / 13.5 - 1:.1e})", failures)
+
+    # -- accuracy on analytic fields --------------------------------------
+    # A constant must come back unchanged. A linear field comes back at each
+    # output cell's centroid up to first-order remapping error: PALM cells
+    # are treated as constant, which is exact only for axis-aligned grids
+    # and at a 0.45 deg rotation leaves ~1e-4 of a cell.
+    ny_c, nx_c = pg.nymax - pg.ny0, pg.nxmax - pg.nx0
+    ones = np.ones((ny_c, nx_c), dtype=bool)
+    c_out = og.take(np.full((ny_c, nx_c), 7.25), fill=np.nan, valid=ones)
+    full = og._w[1].sum(axis=1).reshape(og.shape) >= \
+        og._w[2].reshape(og.shape) * (1 - 1e-9)
+    check(full.sum() > 200
+          and np.abs(c_out[full] - 7.25).max() < 7.25 * 2e-7,
+          "output crs: a constant field is reproduced (to the float32 "
+          "precision the files store)", failures)
+    jj_, ii_ = np.meshgrid(np.arange(ny_c) + 0.5, np.arange(nx_c) + 0.5,
+                           indexing="ij")
+    got = og.take(3.0 + 0.2 * ii_ + 0.1 * jj_, fill=np.nan, valid=ones)
+    to_utm = Transformer.from_crs("EPSG:4326", CRS, always_xy=True)
+    xe = og.x[0] + (og.x[1] - og.x[0]) * (np.arange(og.x.size + 1) - 0.5)
+    ye = og.y[0] + (og.y[1] - og.y[0]) * (np.arange(og.y.size + 1) - 0.5)
+    cx, cy = to_utm.transform(*np.meshgrid(xe, ye))
+    ci = (np.asarray(cx) - ORIGIN_X) / DX
+    cj = (np.asarray(cy) - ORIGIN_Y) / DY
+    qi = 0.25 * (ci[:-1, :-1] + ci[:-1, 1:] + ci[1:, 1:] + ci[1:, :-1])
+    qj = 0.25 * (cj[:-1, :-1] + cj[:-1, 1:] + cj[1:, 1:] + cj[1:, :-1])
+    err = np.abs(got - (3.0 + 0.2 * qi + 0.1 * qj))[full] / 0.2
+    check(err.max() < 1e-3,
+          f"output crs: a linear field lands on the cell centroids "
+          f"(max offset {err.max():.1e} of a cell)", failures)
+
+    # -- scipy's sparse product and the numpy fallback agree -------------
+    try:
+        import scipy.sparse  # noqa: F401
+        rnd = np.random.default_rng(3).random((4, ny_c, nx_c))
+        air = np.random.default_rng(4).random((4, ny_c, nx_c)) > 0.2
+        fast = og.take(rnd, fill=np.nan, valid=air)
+        og._M, og._den_key = False, None
+        slow = og.take(rnd, fill=np.nan, valid=air)
+        og._M = None
+        both = np.isfinite(fast) & np.isfinite(slow)
+        check(np.array_equal(np.isfinite(fast), np.isfinite(slow))
+              and np.abs(fast[both] - slow[both]).max() < 1e-6,
+              "output crs: scipy and numpy remap paths agree", failures)
+    except ImportError:
+        print("  [skip] scipy not installed - sparse path not compared")
+
+    # -- the nearest method is still there ---------------------------------
+    cfg_nn = tmp / "config_4326_nn.yaml"
+    cfg_nn.write_text(cfg.read_text()
+                      .replace("./out_4326", "./out_4326_nn")
+                      .replace("advanced:\n",
+                               "advanced:\n    netcdf:\n"
+                               "        resampling: nearest\n"))
+    rc = pipeline_main(["-c", str(cfg_nn), "--overwrite",
+                        "--stages", "canopy"])
+    with Dataset(tmp / "out_4326_nn" / "test_lad_3d.nc") as nc:
+        lad = nc["lad"][:].filled(0.0)
+        vals = set(np.unique(lad[lad > 0]).round(6))
+    check(rc == 0 and vals == {0.5},
+          "output crs: resampling: nearest copies PALM's values unchanged",
+          failures)
+    return failures
+
+
+def verify_float64_coords(tmp):
+    """Absolute coordinates are float64. PALM stores x/y as float32 and
+    float32 + origin stayed float32, rounding a UTM northing to 0.5 m."""
+    from palm2gis.config import Config
+    from palm2gis.steps.georef import process_static_driver
+    failures = []
+    g = process_static_driver(Config(str(tmp / "config.yaml")))
+    y = g.abs_y(g.y_stat.astype("f4")) + 0.3
+    check(y.dtype == "f8" and abs(float(y[0]) - (ORIGIN_Y + 1.3)) < 1e-6,
+          "coords: absolute y keeps sub-0.5 m precision (float64)", failures)
+    return failures
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--keep", action="store_true",
@@ -1424,6 +1687,10 @@ def main():
 
         print("Verifying the regular time axis ...")
         failures += verify_time_regularity()
+
+        print("Verifying output in EPSG:4326 ...")
+        failures += verify_output_crs(tmp, pipeline_main)
+        failures += verify_float64_coords(tmp)
 
         if failures:
             print(f"\nTEST FAILED: {len(failures)} check(s) failed.")

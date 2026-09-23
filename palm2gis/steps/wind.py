@@ -74,17 +74,21 @@ def _wind_netcdf(cfg, grid, nc, its, times, heights, z, path):
 
     # Own column selection: `wind.stride` thins the GeoPackage point
     # layer, `wind.grid_stride` thins this raster, and the two have no
-    # reason to agree.
-    jj_g = np.arange(0, grid.nymax - grid.ny0, stride)
-    ii_g = np.arange(0, grid.nxmax - grid.nx0, stride)
-    jg, ig = np.meshgrid(jj_g, ii_g, indexing="ij")
-
-    # grid.x_stat / y_stat are ALREADY the cut subdomain (x[nx0:nxmax]),
-    # so they are indexed with cut-relative indices directly. Slicing
-    # them by [nx0:nxmax] a second time shortens the array and then
-    # indexes off the end of it.
-    x_abs = grid.abs_x(np.asarray(grid.x_stat))[ii_g]
-    y_abs = grid.abs_y(np.asarray(grid.y_stat))[jj_g]
+    # reason to agree. The output grid says which PALM column each output
+    # cell samples: every `stride`-th one in PALM's CRS, or the nearest
+    # one to each cell of a regular grid in the output CRS.
+    og = grid.reproj.grid(stride)
+    yd, xd = og.dims
+    if og.conservative:
+        # Every PALM column is sampled at its own surface + h, and those
+        # samples are then averaged onto each output cell - the 2 m field
+        # over a street and a roof is averaged as a 2 m field.
+        jg, ig = np.meshgrid(np.arange(grid.nymax - grid.ny0),
+                             np.arange(grid.nxmax - grid.nx0),
+                             indexing="ij")
+        ok_xy = np.ones(jg.shape, dtype=bool)
+    else:
+        jg, ig, ok_xy = og.jj, og.ii, og.valid
 
     # k index of the first level at or above the local surface + h
     k_of, inside = {}, {}
@@ -99,26 +103,14 @@ def _wind_netcdf(cfg, grid, nc, its, times, heights, z, path):
         fout.title = "PALM wind field sampled at fixed heights above ground"
         fout.createDimension("time", len(its))
         fout.createDimension("height", len(heights))
-        fout.createDimension("y", y_abs.size)
-        fout.createDimension("x", x_abs.size)
 
-        gm = write_crs_var(fout, grid.crs,
+        gm = write_crs_var(fout, grid.reproj.crs,
                            cfg["crs"]["netcdf_attributes"])
-
-        xv = fout.createVariable("x", "f8", ("x",))
-        xv[:] = x_abs
-        xv.standard_name = "projection_x_coordinate"
-        xv.units = "m"
-        xv.axis = "X"
 
         # y stays ASCENDING. GeoTIFF is a north-up raster format and needs
         # its rows flipped; netCDF is not, and flipping here would mirror
         # the field.
-        yv = fout.createVariable("y", "f8", ("y",))
-        yv[:] = y_abs
-        yv.standard_name = "projection_y_coordinate"
-        yv.units = "m"
-        yv.axis = "Y"
+        og.write_axes(fout)
 
         hv = fout.createVariable("height", "f8", ("height",))
         hv[:] = np.asarray(heights, dtype="f8")
@@ -143,7 +135,7 @@ def _wind_netcdf(cfg, grid, nc, its, times, heights, z, path):
         )
         for name, std, units in specs:
             ov = fout.createVariable(name, "f4",
-                                     ("time", "height", "y", "x"),
+                                     ("time", "height", yd, xd),
                                      fill_value=FILL, zlib=True, complevel=4)
             ov.grid_mapping = gm
             ov.standard_name = std
@@ -167,9 +159,17 @@ def _wind_netcdf(cfg, grid, nc, its, times, heights, z, path):
                 k = k_of[h]
                 # A sample above the file's top level is NoData, not
                 # the top level's value relabelled as the requested height.
-                u = np.where(inside[h], u3[k, jg, ig], np.nan)
-                v = np.where(inside[h], v3[k, jg, ig], np.nan)
-                w = np.where(inside[h], w3[k, jg, ig], np.nan)
+                ok = inside[h] & ok_xy
+                u = np.where(ok, u3[k, jg, ig], np.nan)
+                v = np.where(ok, v3[k, jg, ig], np.nan)
+                w = np.where(ok, w3[k, jg, ig], np.nan)
+                if og.conservative:
+                    u, v, w = (og.take(a, np.nan, valid=ok)
+                               for a in (u, v, w))
+                # PALM grid axes -> the output CRS's east/north. After the
+                # remap: it is linear, so the order does not matter, and
+                # this way each output cell turns by its own angle once.
+                u, v = og.rotate(u, v)
                 sp = np.hypot(u, v)
                 dr = (270.0 - np.degrees(np.arctan2(v, u))) % 360.0
                 for name, val in (("u", u), ("v", v), ("w", w),
@@ -178,9 +178,9 @@ def _wind_netcdf(cfg, grid, nc, its, times, heights, z, path):
                     arr[~np.isfinite(arr)] = FILL
                     fout.variables[name][q, hidx, ...] = arr
 
-    info("[wind] wrote {}: {} x {} x {} x {} (t,height,y,x), "
+    info("[wind] wrote {}: {} x {} x {} x {} (t,height,{},{}), "
          "u, v, w, speed, dir_met", cfg.disp(path), len(its),
-         len(heights), y_abs.size, x_abs.size)
+         len(heights), og.shape[0], og.shape[1], yd, xd)
     debug("[wind] ArcGIS Pro: Add Multidimensional Raster Layer as a "
           "Vector Field")
 
@@ -247,9 +247,14 @@ def stage_wind(cfg, grid):
             z_abs[h] = grid.abs_z(grid.elev[jf, if_] + h)
         _warn_above_top(inside, z)
 
+        # Geometry is built in PALM's CRS and transformed as a whole into
+        # the output CRS (exact, z untouched), so the 3D arrows keep their
+        # metre-based length and point where the wind actually blows.
+        reproj = grid.reproj
         x_abs = grid.abs_x(grid.x_stat)
         y_abs = grid.abs_y(grid.y_stat)
-        pts = [Point(x_abs[i], y_abs[j]) for j, i in zip(jf, if_)]
+        pts = reproj.geoms([Point(x_abs[i], y_abs[j])
+                            for j, i in zip(jf, if_)])
         dts = grid.times_to_datetime(times)
         dts_tz = grid.times_to_datetime(times, tz_aware=True)
 
@@ -273,8 +278,12 @@ def stage_wind(cfg, grid):
             parts3 = []
             for h in heights:
                 k = k_idx[h]
-                u = np.where(inside[h], u3[k, jf, if_], np.nan)
-                v = np.where(inside[h], v3[k, jf, if_], np.nan)
+                u_g = np.where(inside[h], u3[k, jf, if_], np.nan)
+                v_g = np.where(inside[h], v3[k, jf, if_], np.nan)
+                # Attributes in the output CRS's east/north; the arrow
+                # geometry below is built from the grid components and
+                # transformed, which gives the same direction.
+                u, v = reproj.rotate_at(u_g, v_g, jf, if_)
                 speed = np.hypot(u, v)
                 # `speed` and `dir_met` stay HORIZONTAL even when the 3D
                 # geometry tilts with w, so the two layers remain directly
@@ -288,7 +297,7 @@ def stage_wind(cfg, grid):
                          "speed": speed.astype(np.float32),
                          "dir_met": dir_met.astype(np.float32)}
                 parts.append(gpd.GeoDataFrame(dict(attrs), geometry=pts,
-                                              crs=grid.crs))
+                                              crs=reproj.crs))
                 if not lines_3d:
                     continue
                 w = (np.where(inside[h], w3[k, jf, if_], np.nan)
@@ -299,14 +308,15 @@ def stage_wind(cfg, grid):
                                      z0 + wz * scale)])
                         for x0, y0, z0, ux, vy, wz
                         in zip(x_abs[if_], y_abs[jf], zb,
-                               np.nan_to_num(u), np.nan_to_num(v),
+                               np.nan_to_num(u_g), np.nan_to_num(v_g),
                                np.nan_to_num(w))]
+                segs = reproj.geoms(segs)
                 a3 = dict(attrs)
                 a3["z"] = zb.astype(np.float32)
                 if w3 is not None:
                     a3["w"] = w.astype(np.float32)
                 parts3.append(gpd.GeoDataFrame(a3, geometry=segs,
-                                               crs=grid.crs))
+                                               crs=reproj.crs))
             frame = (parts[0] if len(parts) == 1
                      else gpd.pd.concat(parts, ignore_index=True))
             frame.to_file(file_to, layer="wind", driver="GPKG",

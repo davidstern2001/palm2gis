@@ -7,3 +7,5 @@ geopandas>=1.0
 shapely>=2.0
 # optional: field aliases in the File Geodatabase (needs GDAL >= 3.8)
 pyarrow>=14
+# optional: ~5x faster conservative resampling with project.output_crs
+scipy>=1.8

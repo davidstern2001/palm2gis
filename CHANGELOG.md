@@ -1,5 +1,54 @@
 # Changelog
 
+## 0.27.0
+
+**Conservative resampling for `project.output_crs`**
+
+- `advanced.netcdf.resampling: conservative | nearest` (legacy layout
+  `crs.resampling`) chooses how voxel, wind and canopy netCDF reach the
+  output grid. **The default is now `conservative`**; 0.26.0 used nearest
+  neighbour.
+- Conservative: each output cell is the area-weighted average of the PALM
+  cells it overlaps, over air cells only, with exact overlap areas from
+  vectorised polygon clipping (checked against shapely to 1e-15). PALM
+  values are cell averages, so area means and totals are kept - the
+  canopy's total leaf area to within float precision - and a cell under
+  half air is NoData. The wind netCDF averages every column's own
+  terrain-following sample; u/v are rotated after the remap.
+- With `scipy` (now an optional requirement) the remap is a sparse matrix
+  product, ~2 s per variable and record on a 1000 x 1000 x 60 cut; without
+  it a numpy path gives the same sums about 4x slower. The air fraction is
+  computed once per mask and reused across variables and records.
+
+## 0.26.0
+
+**Output in another CRS - `project.output_crs`, e.g. EPSG:4326**
+
+- `project.output_crs` (legacy layout: `crs.output`) writes every product
+  in that CRS instead of `input.crs`, for an ArcGIS scene that must match
+  it exactly. `null`, the default, changes nothing.
+- Vector layers - surfaces (GeoPackage, MultiPatch shapefile, File
+  Geodatabase), wind points and `wind_3d` arrows - are transformed
+  exactly, z untouched.
+- Voxel, wind and canopy netCDF are resampled onto a regular grid in the
+  output CRS, `(lat, lon)` in degrees for a geographic one, with the
+  native cell size and nearest neighbour, so values are PALM's own and
+  NoData edges stay sharp. No auxiliary coordinates, so the files remain
+  valid voxel-layer sources.
+- `u` and `v` are rotated from PALM's grid axes into the output CRS's
+  east/north by the per-column meridian convergence (+0.45 deg at
+  Prague), and `speed` / `dir_met` follow.
+
+**Fix - absolute coordinates in float64**
+
+- PALM stores x/y (and the surface `xs`/`ys`) as float32, and adding
+  `origin_x`/`origin_y` kept them float32, which resolves a UTM northing
+  only to 0.5 m. Every absolute y was rounded to the nearest half metre;
+  most visibly, a short `wind_3d` arrow's direction was off by up to
+  ~3 degrees against its own `u`/`v`. Coordinates are now float64.
+  Outputs on a half-metre grid are unchanged; arrow tips move by up to
+  0.25 m.
+
 ## 0.25.0
 
 **Config layout, shared with palm_preproc and palm_postproc**

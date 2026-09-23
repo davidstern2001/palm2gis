@@ -24,7 +24,7 @@ _OUT_FILE = {"file": None}
 
 SCHEMA = {
     "project": {"name": None, "root": None, "output_dir": None,
-                "overwrite": None},
+                "output_crs": None, "overwrite": None},
     "input": {"static_driver": None, "p3d": None, "dynamic_driver": None,
               "data_3d": None, "surface_data": None, "crs": None},
     "region": {"x": None, "y": None, "height_above_surface": None,
@@ -51,7 +51,7 @@ SCHEMA = {
         "grid": {"nz": None, "dz": None, "origin_time": None,
                  "origin_z": None},
         "basic_state": {"surface_pressure": None, "pt_surface": None},
-        "netcdf": {"crs": None, "voxel_drop_k0": None},
+        "netcdf": {"crs": None, "voxel_drop_k0": None, "resampling": None},
         "qgis": {"styles": None, "styles_3d": None},
         "shapefile": {"multipatch_split": None},
         "records": {"skip": None, "count": None, "end": None},
@@ -80,7 +80,8 @@ _ADV_GROUPS = {
                                          "surface_pressure"),
                     "pt_surface": ("pt_surface", "pt_surface")},
     "netcdf": {"crs": ("netcdf_crs", "netcdf_crs"),
-               "voxel_drop_k0": ("voxel_drop_k0", "voxel_drop_k0")},
+               "voxel_drop_k0": ("voxel_drop_k0", "voxel_drop_k0"),
+               "resampling": ("resampling", None)},
     "qgis": {"styles": ("qgis_styles", "qgis_styles"),
              "styles_3d": ("qgis_styles_3d", "qgis_styles_3d")},
     "shapefile": {"multipatch_split": ("multipatch_split",
@@ -337,7 +338,8 @@ def translate(user):
     project = dict(user.get("project") or {})
     _bool(project.get("overwrite"), "project.overwrite")
     name = str(project.get("name") or "palm2gis")
-    out["project"] = {k: v for k, v in project.items() if v is not None}
+    out["project"] = {k: v for k, v in project.items()
+                      if v is not None and k != "output_crs"}
 
     inp = user.get("input") or {}
     reg = user.get("region") or {}
@@ -350,6 +352,8 @@ def translate(user):
     _set(out, "domain", "p3d", inp.get("p3d"))
     _set(out, "domain", "dynamic_driver", inp.get("dynamic_driver"))
     _set(out, "crs", "palm", inp.get("crs"))
+    _set(out, "crs", "output", project.get("output_crs"))
+    _set(out, "crs", "resampling", adv.get("resampling"))
     _set(out, "crs", "netcdf_attributes", adv.get("netcdf_crs"))
     _number(adv.get("nz"), adv_where.get("nz", "advanced.grid.nz"), 1,
             integer=True)
@@ -561,6 +565,8 @@ MESSAGE_NAMES = {
     "surface_pressure": "advanced.basic_state.surface_pressure",
     "pt_surface": "advanced.basic_state.pt_surface",
     "crs.palm": "input.crs",
+    "crs.output": "project.output_crs",
+    "crs.resampling": "advanced.netcdf.resampling",
     "voxel.drop_k0": "advanced.netcdf.voxel_drop_k0",
     "Set voxel.do_velocity: false to write scalars only":
         "Remove u, v and w from voxel.variables to write scalars only",

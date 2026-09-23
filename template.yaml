@@ -33,6 +33,15 @@ project:
     root: '/storage/data/palm/project_name'   # base for input paths
     #output_dir: '.'             # where outputs go (relative to root)
     #overwrite: false            # false: keep existing outputs, fill gaps
+    #output_crs: null            # CRS every output is WRITTEN in.
+                                 # null = input.crs, unchanged.
+                                 # 'EPSG:4326' for an ArcGIS scene in
+                                 # WGS 84: vector layers are transformed
+                                 # exactly (z untouched); voxel, wind and
+                                 # canopy netCDF are resampled onto a
+                                 # regular lon/lat grid of the same cell
+                                 # size (advanced.netcdf.resampling), and
+                                 # u/v are turned to true east/north.
 
 
 # ---------------------------------------------------------------------
@@ -212,6 +221,17 @@ canopy:
                                  # grid_mapping parameters for xarray,
                                  # ArcGIS then shows "Custom"
         #voxel_drop_k0: true     # drop z = 0 so vertical spacing is uniform
+        #resampling: conservative  # conservative | nearest. Only with
+                                 # project.output_crs: how voxel, wind and
+                                 # canopy netCDF reach the new grid.
+                                 # conservative: area-weighted average of
+                                 #   the PALM cells each output cell
+                                 #   overlaps, air cells only; keeps means
+                                 #   and totals (PALM values are cell
+                                 #   averages). Faster with scipy.
+                                 # nearest: the PALM cell under each
+                                 #   output cell centre; values exact,
+                                 #   positions within half a cell.
     #qgis:
         #styles: true            # write .qml styles next to the layers
         #styles_3d: true         # add a 3D renderer to those styles

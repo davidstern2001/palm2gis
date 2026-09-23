@@ -157,21 +157,11 @@ def stage_canopy(cfg, grid):
         fout.source = str(src)
 
         fout.createDimension("time", 1)
-        fout.createDimension("x", grid.nxmax - grid.nx0)
-        fout.createDimension("y", grid.nymax - grid.ny0)
+        # Horizontal axes in the output CRS (PALM's own, or resampled).
+        og = grid.reproj.grid()
+        yd, xd = og.dims
+        og.write_axes(fout)
         fout.createDimension("z", z_out.size)
-
-        xv = fout.createVariable("x", "f8", ("x",))
-        xv[:] = grid.abs_x(grid.x_stat)
-        xv.standard_name = "projection_x_coordinate"
-        xv.units = "m"
-        xv.axis = "X"
-
-        yv = fout.createVariable("y", "f8", ("y",))
-        yv[:] = grid.abs_y(grid.y_stat)
-        yv.standard_name = "projection_y_coordinate"
-        yv.units = "m"
-        yv.axis = "Y"
 
         zv = fout.createVariable("z", "f8", ("z",))
         zv[:] = z_out
@@ -199,11 +189,11 @@ def stage_canopy(cfg, grid):
         tv.long_name = ("nominal time of a static field (the canopy "
                         "does not vary in time)")
 
-        gm = write_crs_var(fout, grid.crs,
+        gm = write_crs_var(fout, grid.reproj.crs,
                            cfg["crs"]["netcdf_attributes"])
         for name, (long_name, cut) in sorted(vols.items()):
             ov = fout.createVariable(name, "f4",
-                                     ("time", "z", "y", "x"),
+                                     ("time", "z", yd, xd),
                                      fill_value=FILL, zlib=True,
                                      complevel=4)
             ov.grid_mapping = gm
@@ -212,10 +202,14 @@ def stage_canopy(cfg, grid):
             # source that has any.
             ov.units = "m2 m-3"
             ov.long_name = long_name
-            ov[0] = np.where(cut > 0, cut, FILL)
+            # Density, zeros included: a conservative remap then keeps
+            # the total leaf area, and "no vegetation" becomes NoData only
+            # after resampling.
+            dens = og.take(np.asarray(cut, dtype="f8"), fill=0.0,
+                           valid=np.ones(cut.shape, dtype=bool))
+            ov[0] = np.where(dens > 0, dens, FILL)
 
-    info("[canopy] wrote {}: 1 x {} x {} x {} (t,z,y,x), {} at {}, "
+    info("[canopy] wrote {}: 1 x {} x {} x {} (t,z,{},{}), {} at {}, "
          "{} canopy cells",
-         cfg.disp(path), z_out.size, grid.nymax - grid.ny0,
-         grid.nxmax - grid.nx0, ", ".join(sorted(vols)),
+         cfg.disp(path), z_out.size, og.shape[0], og.shape[1], yd, xd, ", ".join(sorted(vols)),
          t_label, int((lad_cut > 0).sum()))
