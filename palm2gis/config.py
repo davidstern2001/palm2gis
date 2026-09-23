@@ -234,14 +234,17 @@ DEFAULTS = {
     # open, set this to false and the 2D style and temporal settings are
     # unaffected.
     "qgis_styles_3d": True,
-    # Write temperature variables (theta*, tsurf*/t_surf*, t_surface, ta*)
-    # in degrees Celsius instead of kelvin, in EVERY product: voxel NetCDF
+    # Set by advanced.units.temperature (C | K), and C by default: an air
+    # or surface temperature is wanted in degrees C, while a POTENTIAL
+    # temperature (theta*) is kelvin-defined and is exempt whatever this
+    # says. Covers tsurf*/t_surf*, t_surface and ta*, in EVERY product:
+    # voxel NetCDF
     # and the surface element layers. Applied at
     # write time only - all physics (the Exner/ta derivation) still runs in
     # kelvin, and NoData cells keep their fill value. The `units` attribute
     # in the NetCDF outputs is set to "degC" accordingly. Inputs must stay
     # raw kelvin either way (see the raw-input guard).
-    "celsius": False,
+    "celsius": True,
     # Explicit temperature scale for variables whose `units` attribute
     # cannot be read. Maps a variable name to "K" or "C", e.g.
     # {ta_2m*_xy: C}. Needed rarely: PALM's own unit strings are

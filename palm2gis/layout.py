@@ -27,9 +27,12 @@ SCHEMA = {
                 "overwrite": None},
     "input": {"static_driver": None, "p3d": None, "dynamic_driver": None,
               "data_3d": None, "surface_data": None, "crs": None},
-    "region": {"x": None, "y": None, "height_above_highest_surface": None,
+    "region": {"x": None, "y": None, "height_above_surface": None,
+               # pre-0.25 names, still accepted:
+               "height_above_highest_surface": None,
                "time_from": None, "time_to": None},
-    "celsius": None,
+    "time": {"from": None, "to": None},
+    "celsius": None,             # pre-0.25; advanced.units now
     "voxel": {"enabled": None, "variables": None, "netcdf": _OUT_FILE},
     "surfaces": {"enabled": None, "variables": None,
                  "all_elements_gpkg": _OUT_FILE,
@@ -41,29 +44,67 @@ SCHEMA = {
                       "arrows_3d": None, "arrow_length_per_ms": None,
                       "tilt_with_w": None}},
     "canopy": {"enabled": None, "lad_netcdf": _OUT_FILE},
-    "advanced": {"nz": None, "dz": None, "origin_time": None,
-                 "origin_z": None, "surface_pressure": None,
-                 "pt_surface": None,
-                 "temperature_units": None, "qgis_styles": None,
-                 "qgis_styles_3d": None, "voxel_drop_k0": None,
-                 "multipatch_split": None, "canopy_file_from": None,
-                 "netcdf_crs": None,
-                 "skip_times": None, "n_times": None, "time_end": None,
-                 "time_step": None, "time_start": None, "stages": None},
+    "advanced": {
+        # Subsections (0.25 onwards).
+        "units": {"temperature": None, "potential_temperature": None,
+                  "overrides": None},
+        "grid": {"nz": None, "dz": None, "origin_time": None,
+                 "origin_z": None},
+        "basic_state": {"surface_pressure": None, "pt_surface": None},
+        "netcdf": {"crs": None, "voxel_drop_k0": None},
+        "qgis": {"styles": None, "styles_3d": None},
+        "shapefile": {"multipatch_split": None},
+        "records": {"skip": None, "count": None, "end": None},
+        "time_axis": {"step": None, "start": None},
+        "canopy_file_from": None, "stages": None,
+        # Flat pre-0.25 names, still accepted.
+        "nz": None, "dz": None, "origin_time": None, "origin_z": None,
+        "surface_pressure": None, "pt_surface": None,
+        "temperature_units": None, "qgis_styles": None,
+        "qgis_styles_3d": None, "voxel_drop_k0": None,
+        "multipatch_split": None, "netcdf_crs": None,
+        "skip_times": None, "n_times": None, "time_end": None,
+        "time_step": None, "time_start": None,
+    },
+}
+
+# advanced: subsection key -> (internal name, flat pre-0.25 name).
+_ADV_GROUPS = {
+    "units": {"temperature": ("units_temperature", None),
+              "potential_temperature": ("units_potential_temperature", None),
+              "overrides": ("temperature_units", "temperature_units")},
+    "grid": {"nz": ("nz", "nz"), "dz": ("dz", "dz"),
+             "origin_time": ("origin_time", "origin_time"),
+             "origin_z": ("origin_z", "origin_z")},
+    "basic_state": {"surface_pressure": ("surface_pressure",
+                                         "surface_pressure"),
+                    "pt_surface": ("pt_surface", "pt_surface")},
+    "netcdf": {"crs": ("netcdf_crs", "netcdf_crs"),
+               "voxel_drop_k0": ("voxel_drop_k0", "voxel_drop_k0")},
+    "qgis": {"styles": ("qgis_styles", "qgis_styles"),
+             "styles_3d": ("qgis_styles_3d", "qgis_styles_3d")},
+    "shapefile": {"multipatch_split": ("multipatch_split",
+                                       "multipatch_split")},
+    "records": {"skip": ("skip_times", "skip_times"),
+                "count": ("n_times", "n_times"),
+                "end": ("time_end", "time_end")},
+    "time_axis": {"step": ("time_step", "time_step"),
+                  "start": ("time_start", "time_start")},
 }
 
 # Top-level keys of the legacy layout, and where each went.
 _LEGACY_HINT = {
-    "domain": "input (static_driver, p3d) and advanced (nz, dz, origin_*)",
-    "bounds": "region (x, y, height_above_highest_surface, time_from, "
-              "time_to) and advanced (skip_times, ...)",
+    "domain": "input (static_driver, p3d) and advanced.grid (nz, dz, "
+              "origin_*)",
+    "bounds": "region (x, y, height_above_surface), time (from, to) and "
+              "advanced.records",
     "crs": "input.crs",
     "stages": "advanced.stages",
-    "surface_pressure": "advanced.surface_pressure",
-    "pt_surface": "advanced.pt_surface",
-    "temperature_units": "advanced.temperature_units",
-    "qgis_styles": "advanced.qgis_styles",
-    "qgis_styles_3d": "advanced.qgis_styles_3d",
+    "surface_pressure": "advanced.basic_state.surface_pressure",
+    "pt_surface": "advanced.basic_state.pt_surface",
+    "temperature_units": "advanced.units.overrides",
+    "qgis_styles": "advanced.qgis.styles",
+    "qgis_styles_3d": "advanced.qgis.styles_3d",
 }
 
 VELOCITY = ("u", "v", "w")
@@ -79,7 +120,7 @@ class LayoutError(Exception):
 def is_new_layout(user):
     """The new layout is recognised by its own top-level blocks."""
     return isinstance(user, dict) and any(
-        k in user for k in ("input", "region", "advanced"))
+        k in user for k in ("input", "region", "time", "advanced"))
 
 
 def _check_keys(block, schema, where):
@@ -194,6 +235,85 @@ def _span(region, axis):
     return val[0], val[1]
 
 
+def _advanced(user, notes):
+    """advanced: -> {internal name: value}, reading the subsections and the
+    flat pre-0.25 keys alike. A flat key is reported once and the
+    subsection wins if both are given."""
+    adv = user.get("advanced") or {}
+    if not isinstance(adv, dict):
+        raise LayoutError(f"advanced must be a block of settings, got "
+                          f"{adv!r}.")
+    out, where = {}, {}
+    for group, keys in _ADV_GROUPS.items():
+        for key, (internal, flat) in keys.items():
+            if flat is not None and adv.get(flat) is not None:
+                out[internal] = adv[flat]
+                where[internal] = f"advanced.{flat}"
+                notes.append(f"advanced.{flat} is now "
+                             f"advanced.{group}.{key} - the old name still "
+                             f"works for now.")
+            val = (adv.get(group) or {}).get(key)
+            if val is not None:
+                out[internal] = val
+                where[internal] = f"advanced.{group}.{key}"
+    for key in ("canopy_file_from", "stages"):
+        if adv.get(key) is not None:
+            out[key] = adv[key]
+            where[key] = f"advanced.{key}"
+    return out, where
+
+
+def _units(user, adv, where, notes):
+    """advanced.units -> the internal `celsius` flag."""
+    if user.get("celsius") is not None:
+        notes.append("celsius is now advanced.units.temperature (C or K) "
+                     "- the old name still works for now.")
+        return _bool(user["celsius"], "celsius")
+    scale = adv.get("units_temperature")
+    pot = adv.get("units_potential_temperature")
+    if pot is not None and str(pot).upper() != "K":
+        raise LayoutError(
+            "advanced.units.potential_temperature must be K: theta and "
+            "theta_surface are kelvin-defined, so a Celsius value would "
+            "not be a potential temperature. List ta or t_surface in the "
+            "stage's variables for an actual temperature in degrees C.")
+    if scale is None:
+        return None
+    if str(scale).upper() not in ("K", "C"):
+        raise LayoutError(f"{where['units_temperature']} must be K or C, "
+                          f"got {scale!r}.")
+    return str(scale).upper() == "C"
+
+
+def _time_window(user, reg, notes):
+    """The time section, or the pre-0.25 region.time_from / time_to."""
+    blk = user.get("time") or {}
+    if not isinstance(blk, dict):
+        raise LayoutError(f"time must be a block with from: and to: lines, "
+                          f"got {blk!r}.")
+    out = {"time_from": blk.get("from"), "time_to": blk.get("to")}
+    for old, new in (("time_from", "from"), ("time_to", "to")):
+        if reg.get(old) is not None:
+            notes.append(f"region.{old} is now time.{new} - the old name "
+                         f"still works for now.")
+            if out[old] is None:
+                out[old] = reg[old]
+    return out
+
+
+def _height(reg, notes):
+    """The vertical cut, metres above the surface below."""
+    val = reg.get("height_above_surface")
+    old = reg.get("height_above_highest_surface")
+    if old is not None:
+        notes.append("region.height_above_highest_surface is now "
+                     "region.height_above_surface - the old name still "
+                     "works for now.")
+        if val is None:
+            val = old
+    return _number(val, "region.height_above_surface", 0)
+
+
 def _enabled(block, where):
     """A stage runs when its block exists and enabled is not false."""
     if block is None:
@@ -221,7 +341,7 @@ def translate(user):
 
     inp = user.get("input") or {}
     reg = user.get("region") or {}
-    adv = user.get("advanced") or {}
+    adv, adv_where = _advanced(user, notes)
 
     # -- input -------------------------------------------------------------
     if not inp.get("static_driver"):
@@ -231,37 +351,42 @@ def translate(user):
     _set(out, "domain", "dynamic_driver", inp.get("dynamic_driver"))
     _set(out, "crs", "palm", inp.get("crs"))
     _set(out, "crs", "netcdf_attributes", adv.get("netcdf_crs"))
-    _number(adv.get("nz"), "advanced.nz", 1, integer=True)
-    _number(adv.get("dz"), "advanced.dz", 0)
+    _number(adv.get("nz"), adv_where.get("nz", "advanced.grid.nz"), 1,
+            integer=True)
+    _number(adv.get("dz"), adv_where.get("dz", "advanced.grid.dz"), 0)
     for key in ("nz", "dz", "origin_time", "origin_z"):
         _set(out, "domain", key, adv.get(key))
     if not inp.get("p3d") and (adv.get("nz") is None
                                or adv.get("dz") is None):
-        raise LayoutError("Give input.p3d, or both advanced.nz and "
-                          "advanced.dz.")
+        raise LayoutError("Give input.p3d, or both advanced.grid.nz and "
+                          "advanced.grid.dz.")
 
-    # -- region ------------------------------------------------------------
-    _number(reg.get("height_above_highest_surface"),
-            "region.height_above_highest_surface", 0)
+    # -- region and time -----------------------------------------------------
     x0, xmax = _span(reg, "x")
     y0, ymax = _span(reg, "y")
+    window = _time_window(user, reg, notes)
     for key, val in (("x0", x0), ("xmax", xmax), ("y0", y0),
                      ("ymax", ymax),
-                     ("zmax", reg.get("height_above_highest_surface")),
-                     ("time_from", reg.get("time_from")),
-                     ("time_to", reg.get("time_to"))):
+                     ("zmax", _height(reg, notes)),
+                     ("time_from", window["time_from"]),
+                     ("time_to", window["time_to"])):
         _set(out, "bounds", key, val)
     for key in ("skip_times", "n_times", "time_end", "time_step",
                 "time_start"):
         _set(out, "bounds", key, adv.get(key))
 
     # -- global options ------------------------------------------------------
-    if _bool(user.get("celsius"), "celsius") is not None:
-        out["celsius"] = user["celsius"]
-    _bool(adv.get("qgis_styles"), "advanced.qgis_styles")
-    _bool(adv.get("qgis_styles_3d"), "advanced.qgis_styles_3d")
-    _number(adv.get("surface_pressure"), "advanced.surface_pressure", 1)
-    _number(adv.get("pt_surface"), "advanced.pt_surface", 1)
+    celsius = _units(user, adv, adv_where, notes)
+    if celsius is not None:
+        out["celsius"] = celsius
+    for key in ("qgis_styles", "qgis_styles_3d"):
+        _bool(adv.get(key), adv_where.get(key, f"advanced.qgis.{key}"))
+    _number(adv.get("surface_pressure"),
+            adv_where.get("surface_pressure",
+                          "advanced.basic_state.surface_pressure"), 1)
+    _number(adv.get("pt_surface"),
+            adv_where.get("pt_surface",
+                          "advanced.basic_state.pt_surface"), 1)
     for key in ("surface_pressure", "pt_surface", "temperature_units",
                 "qgis_styles",
                 "qgis_styles_3d"):
@@ -298,7 +423,9 @@ def translate(user):
                         and v not in ("ta", "ah", "speed_3d")],
         }
         _set(out, "voxel", "drop_k0",
-             _bool(adv.get("voxel_drop_k0"), "advanced.voxel_drop_k0"))
+             _bool(adv.get("voxel_drop_k0"),
+                   adv_where.get("voxel_drop_k0",
+                                 "advanced.netcdf.voxel_drop_k0")))
     else:
         out["voxel"] = {"enabled": False}
         if vx_on:
@@ -342,7 +469,9 @@ def translate(user):
         }
         _set(out, "surfaces", "multipatch_split",
              _number(adv.get("multipatch_split"),
-                     "advanced.multipatch_split", 1, integer=True))
+                     adv_where.get("multipatch_split",
+                                   "advanced.shapefile.multipatch_split"),
+                     1, integer=True))
     else:
         out["surfaces"] = {"enabled": False}
         if sf_on:
@@ -412,25 +541,27 @@ def translate(user):
 # the new layout, the log rewrites them into the names that config uses,
 # so "raise bounds.zmax" reads "raise region.height_above_highest_surface".
 MESSAGE_NAMES = {
-    "bounds.time_from": "region.time_from",
-    "bounds.time_to": "region.time_to",
-    "bounds.zmax": "region.height_above_highest_surface",
+    "bounds.time_from": "time.from",
+    "bounds.time_to": "time.to",
+    "bounds.zmax": "region.height_above_surface",
     "bounds.x0": "region.x", "bounds.xmax": "region.x",
     "bounds.y0": "region.y", "bounds.ymax": "region.y",
-    "bounds.skip_times": "advanced.skip_times",
-    "bounds.n_times": "advanced.n_times",
-    "bounds.time_end": "advanced.time_end",
-    "bounds.time_step": "advanced.time_step",
-    "bounds.time_start": "advanced.time_start",
+    "bounds.skip_times": "advanced.records.skip",
+    "bounds.n_times": "advanced.records.count",
+    "bounds.time_end": "advanced.records.end",
+    "bounds.time_step": "advanced.time_axis.step",
+    "bounds.time_start": "advanced.time_axis.start",
     "bounds cut": "region window",
     "domain.static_driver": "input.static_driver",
     "domain.p3d": "input.p3d",
     "domain.dynamic_driver": "input.dynamic_driver",
-    "domain.nz": "advanced.nz", "domain.dz": "advanced.dz",
-    "domain.origin_time": "advanced.origin_time",
-    "domain.origin_z": "advanced.origin_z",
+    "domain.nz": "advanced.grid.nz", "domain.dz": "advanced.grid.dz",
+    "domain.origin_time": "advanced.grid.origin_time",
+    "domain.origin_z": "advanced.grid.origin_z",
+    "surface_pressure": "advanced.basic_state.surface_pressure",
+    "pt_surface": "advanced.basic_state.pt_surface",
     "crs.palm": "input.crs",
-    "voxel.drop_k0": "advanced.voxel_drop_k0",
+    "voxel.drop_k0": "advanced.netcdf.voxel_drop_k0",
     "Set voxel.do_velocity: false to write scalars only":
         "Remove u, v and w from voxel.variables to write scalars only",
     "voxel.scalars": "voxel.variables",

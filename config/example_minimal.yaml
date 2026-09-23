@@ -10,7 +10,7 @@ project:
 
 input:
     static_driver: INPUT/example_static_N02
-    p3d:           INPUT/example_p3d_N02    # or: advanced.nz + advanced.dz
+    p3d:           INPUT/example_p3d_N02   # or: advanced.grid.nz + .dz
     data_3d:       OUTPUT/DATA_3D_NETCDF_N02
     surface_data:  OUTPUT/SURFACE_DATA_NETCDF_N02
 
@@ -30,6 +30,6 @@ wind:
         file: example_wind.gpkg
         every_nth_column: 4
 
-# Everything else - CRS, region (default: no cut, all timesteps),
-# celsius (default false = kelvin), canopy (off unless its section is
-# present) - comes from the defaults.
+# The rest takes its default: CRS from the static driver, region and time
+# = no cut, units = degrees C for air and surface temperatures and K for
+# potential temperatures, canopy off (no section).

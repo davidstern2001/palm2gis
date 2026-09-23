@@ -3,6 +3,9 @@
 # =====================================================================
 #
 # HOW TO READ THIS FILE
+#   * Uncommented lines have no usable default and must be set.
+#     #commented lines are optional and show the default.
+#   * A key listed as `a | b` accepts exactly one of those values.
 #   * Every output is its own block with a `file:` line.
 #       file: 'something.nc'   -> produced
 #       file: null             -> skipped (as is a missing block)
@@ -12,15 +15,14 @@
 #   * In filenames, {name} is replaced by project.name.
 #   * Input paths are relative to project.root, output filenames to
 #     project.output_dir.
-#   * Uncommented lines have no usable default. #commented lines are
-#     optional and show the default. An unknown or misspelt setting stops
-#     the run with a suggestion, so a typo never goes unnoticed.
+#   * An unknown or misspelt setting stops the run with a suggestion, so
+#     a typo never goes unnoticed.
+#   * Configs in the pre-0.20 layout (domain / bounds / file_from ...) and
+#     the pre-0.25 names (celsius, height_above_highest_surface, the flat
+#     advanced keys) still load; each is reported once at startup.
 #
 # Copy to config/<project>.yaml, keep what you need, and run:
 #   python run_palm2gis.py -c config/<project>.yaml
-#
-# Configs in the pre-0.20 layout (domain / bounds / file_from ...) still
-# load; see the README.
 
 
 # ---------------------------------------------------------------------
@@ -37,7 +39,8 @@ project:
 # 2. INPUT FILES   (shared by all stages)
 # ---------------------------------------------------------------------
 # Only raw (or join-only) PALM output is accepted: local metre
-# coordinates, original units, original variable layout.
+# coordinates, original units, original variable layout. palm_postproc's
+# `joined` output is the right input; its `analysis` output is not.
 input:
     static_driver: 'INPUT/project_static_N02'          # *_static*
     p3d:           'INPUT/project_p3d_N02'             # nz, dz, intervals,
@@ -53,31 +56,40 @@ input:
 
 
 # ---------------------------------------------------------------------
-# 3. WHAT PART OF THE SIMULATION TO CONVERT
+# 3. REGION   what part of the domain to convert
 # ---------------------------------------------------------------------
 region:
     # Horizontal window in metres of LOCAL PALM coordinates, [from, to].
     #x: null                     # null = whole domain
     #y: null
-    # Vertical extent: metres above the highest surface in the window.
-    #height_above_highest_surface: null
 
-    # Time window, both ends inclusive; null = first / last record.
-    # Resolved against each file's own time axis, so a 10-minute 3D file
-    # and an hourly surface file cover the same period. Accepted:
-    #   '2023-08-24 13:00'   absolute time
-    #   '13:00'              clock time, first occurrence after origin_time
-    #   '6h' / '90min'       offset from origin_time
-    #   3600                 seconds since origin_time
-    # Always QUOTE clock times: unquoted, YAML reads 13:00 as a number.
-    #time_from: null
-    #time_to: null
+    # Vertical extent, in metres ABOVE THE SURFACE BELOW: the terrain and
+    # the rooftops, so the plane follows the buildings and the number of
+    # levels kept varies across the domain. null = up to the top of the
+    # file.
+    #
+    # This is a different reference from the rest of the chain, where a
+    # height is measured from the domain base: palm_preproc's nz and
+    # palm_postproc's region.z_max both count from there. A file that
+    # palm_postproc has already cut cannot be extended here, and palm2gis
+    # warns when it sees one.
+    #height_above_surface: null
 
 
 # ---------------------------------------------------------------------
-# 4. UNITS
+# 4. TIME   which records to convert
 # ---------------------------------------------------------------------
-#celsius: false                 # temperatures in degC; theta stays K
+# Both ends inclusive; null = first / last record. Resolved against each
+# file's own time axis, so a 10-minute 3D file and an hourly surface file
+# cover the same period. Accepted:
+#   '2023-08-24 13:00'   absolute time
+#   '13:00'              clock time, first occurrence after origin_time
+#   '6h' / '90min'       offset from origin_time
+#   3600                 seconds since origin_time
+# Always QUOTE clock times: unquoted, YAML reads 13:00 as a number.
+time:
+    #from: null
+    #to: null
 
 
 # ---------------------------------------------------------------------
@@ -102,7 +114,7 @@ voxel:
 
 
 # ---------------------------------------------------------------------
-# 6. SURFACES   ground, roofs and walls as 3D polygons   (reads surface_data)
+# 6. SURFACES   ground, roofs and walls as 3D polygons  (reads surface_data)
 # ---------------------------------------------------------------------
 # One row per element per timestep, with orient (up / wall_N ...), z,
 # z_agl and a time field for the time slider.
@@ -123,11 +135,13 @@ surfaces:
 # ---------------------------------------------------------------------
 # 7. WIND   sampled at heights above the local surface   (reads data_3d)
 # ---------------------------------------------------------------------
-# Heights follow terrain AND rooftops. dir_met is the direction the wind
-# blows FROM, clockwise from north.
+# dir_met is the direction the wind blows FROM, clockwise from north.
 wind:
     #enabled: true
-    heights_above_surface: [2.0] # metres
+    # Metres above the surface below - the same reference as
+    # region.height_above_surface, so these heights follow terrain AND
+    # rooftops.
+    heights_above_surface: [2.0]
 
     netcdf:                      # (time, height, y, x): u, v, w, speed,
         file: '{name}_wind.nc'   # dir_met. ArcGIS Pro: Add Multidimensional
@@ -157,27 +171,62 @@ canopy:
 # 9. ADVANCED   leave out unless you know you need it
 # ---------------------------------------------------------------------
 #advanced:
-    #nz: null                    # grid levels; required without input.p3d
-    #dz: null                    # vertical spacing; required without p3d
-    #origin_time: null           # override the static driver, 'YYYY-MM-DD HH:MM:SS'
-    #origin_z: null              # override the static driver [m a.s.l.]
-    #surface_pressure: null      # Pa at z = 0; default: what PALM used
-                                 # (dynamic driver / p3d / parent p3d)
-    #pt_surface: null            # K; default from the p3d / parent p3d
-    #temperature_units: {}       # e.g. {ta_2m*_xy: C} for unreadable units
-    #qgis_styles: true           # write .qml styles next to the layers
-    #qgis_styles_3d: true        # add a 3D renderer to those styles
-    #voxel_drop_k0: true         # drop z = 0 so vertical spacing is uniform
-    #multipatch_split: 2000000   # rows before the .shp splits per timestep
+
+    # --- 9a. Units ----------------------------------------------------
+    # The defaults are what the outputs should normally be: an air or
+    # surface temperature in degrees C, a POTENTIAL temperature in K
+    # (converting it would make the name meaningless). The same rule and
+    # the same variable list as palm_postproc, so a directory cannot end
+    # up mixing units.
+    #units:
+        #temperature: C          # K | C - ta, t_surface, tsurf*, ta_2m*
+        #potential_temperature: K   # K only: theta and theta_surface are
+                                 # kelvin-defined, so a Celsius value would
+                                 # not be a potential temperature. List ta
+                                 # or t_surface for an actual temperature.
+        #overrides: {}           # for files whose units attribute is
+                                 # unreadable, e.g. {ta_2m*_xy: C}
+
+    # --- 9b. Grid -----------------------------------------------------
+    # Normally read from input.p3d and the static driver.
+    #grid:
+        #nz: null                # grid levels; required without input.p3d
+        #dz: null                # vertical spacing; required without p3d
+        #origin_z: null          # domain base [m a.s.l.]; overrides the
+                                 # static driver
+        #origin_time: null       # overrides the static driver,
+                                 # 'YYYY-MM-DD HH:MM:SS'
+
+    # --- 9c. Basic state ----------------------------------------------
+    # Used to derive ta, t_surface and ah. The default is what PALM
+    # itself used, read from the dynamic driver, the p3d or the parent
+    # p3d, and cross-checked against ta / theta in the data.
+    #basic_state:
+        #surface_pressure: null  # Pa at z = 0
+        #pt_surface: null        # K
+
+    # --- 9d. Output details -------------------------------------------
+    #netcdf:
+        #crs: wkt                # wkt | cf. wkt: ArcGIS shows the EPSG
+                                 # WKID (e.g. 32633); cf: also CF
+                                 # grid_mapping parameters for xarray,
+                                 # ArcGIS then shows "Custom"
+        #voxel_drop_k0: true     # drop z = 0 so vertical spacing is uniform
+    #qgis:
+        #styles: true            # write .qml styles next to the layers
+        #styles_3d: true         # add a 3D renderer to those styles
+    #shapefile:
+        #multipatch_split: 2000000   # rows before the .shp splits per
+                                 # timestep
     #canopy_file_from: null      # LAD source; default input.static_driver
-    #netcdf_crs: wkt             # wkt: ArcGIS shows the EPSG WKID (e.g.
-    #                            #   32633); cf: also CF grid_mapping params
-    #                            #   for xarray, ArcGIS then shows "Custom"
-    #stages: [voxel, surfaces, wind, canopy]   # run order
-    # Record indices instead of region.time_from / time_to (per file):
-    #skip_times: 0
-    #n_times: null
-    #time_end: null
+
+    # --- 9e. Record selection -----------------------------------------
+    # Record indices instead of the time section, applied per file.
+    #records:
+        #skip: 0
+        #count: null
+        #end: null
     # Only when a file's time variable is empty and there is no p3d:
-    #time_step: null
-    #time_start: null
+    #time_axis:
+        #step: null              # seconds between records
+        #start: null             # time of the first record

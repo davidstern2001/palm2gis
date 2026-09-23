@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.25.0
+
+**Config layout, shared with palm_preproc and palm_postproc**
+
+- `region` now holds the spatial window only, and the time window moves to
+  its own `time:` section (`from`, `to`).
+- `region.height_above_highest_surface` is now
+  `region.height_above_surface`, matching `wind.heights_above_surface`;
+  both measure from the surface below (terrain and rooftops).
+- `advanced` is grouped into `units`, `grid`, `basic_state`, `netcdf`,
+  `qgis`, `shapefile`, `records` and `time_axis` instead of one flat list.
+- `celsius` is replaced by `advanced.units.temperature` (`K` or `C`), and
+  **the default changes to `C`**: an air or surface temperature is wanted
+  in degrees C. `advanced.units.potential_temperature` accepts only `K`
+  and rejects `C`, since `theta` and `theta_surface` are kelvin-defined.
+  `advanced.temperature_units` becomes `advanced.units.overrides`.
+- Every pre-0.25 name still loads and is reported once at startup, as the
+  pre-0.20 layout is. Log messages use the new names.
+
 ## 0.24.1
 
 **Logging**

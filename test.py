@@ -323,8 +323,10 @@ def verify_outputs(out):
 
     # derived temperature must reach the surface element layer
     allel_ta = gpd.read_file(out / "test_surfaces.gpkg", layer="surfaces")
+    # t_surface is written in degrees C by default, theta_surface in K.
     check("t_surface" in allel_ta.columns and "t_surf" not in allel_ta.columns
-          and (allel_ta["t_surface"] > allel_ta["theta_surface"]).all(),
+          and (allel_ta["t_surface"] + 273.15
+               > allel_ta["theta_surface"]).all(),
           "thermo: t_surface in the element layer (p_s > p0 -> T > theta)",
           failures)
     with Dataset(out / "test_voxel.nc") as nc:
@@ -1047,7 +1049,7 @@ input:
     surface_data: test_surf
     crs: "{CRS}"
 region:
-    height_above_highest_surface: 10
+    height_above_surface: 10
 voxel:
     variables: [u, v, w, theta, ta]
     netcdf:
@@ -1130,7 +1132,10 @@ advanced:
     from palm2gis.steps.thermo import KAPPA, P0, RD, humidity_scale
     ah_cfg = tmp / "config_ah.yaml"
     ah_cfg.write_text(new.read_text().replace("./out_new", "./out_ah")
-                      .replace("[u, v, w, theta, ta]", "[theta, ta, ah]"))
+                      .replace("[u, v, w, theta, ta]", "[theta, ta, ah]")
+                      .replace("advanced:",
+                               "advanced:\n    units:\n"
+                               "        temperature: K", 1))
     rc = pipeline_main(["-c", str(ah_cfg), "--stages", "voxel"])
     import numpy as _np
     with Dataset(tmp / "out_ah" / "test_voxel.nc") as nc, \
@@ -1208,11 +1213,57 @@ advanced:
 
     from palm2gis.layout import to_new_names
     check(to_new_names("raise bounds.zmax, set wind.file_from") ==
-          "raise region.height_above_highest_surface, set input.data_3d"
+          "raise region.height_above_surface, set input.data_3d"
           and to_new_names("mybounds.zmax") == "mybounds.zmax",
           "layout: messages use the new setting names", failures)
 
     base = new.read_text()
+
+    # -- 0.25 key names, and the pre-0.25 ones they replaced ----------------
+    def settings(text, name="config_names.yaml"):
+        p = tmp / name
+        p.write_text(text)
+        return Config(str(p))
+
+    c_new = settings(base)
+    check(c_new["celsius"] is True and c_new["bounds"]["zmax"] == 10,
+          "layout: temperature is Celsius by default, height_above_surface "
+          "sets the cut", failures)
+    c_old = settings(base.replace("height_above_surface",
+                                  "height_above_highest_surface")
+                     + "celsius: false\n", "config_oldnames.yaml")
+    check(c_old["bounds"]["zmax"] == 10 and c_old["celsius"] is False,
+          "layout: pre-0.25 height_above_highest_surface and celsius still "
+          "work", failures)
+    c_k = settings(base.replace("advanced:",
+                                "advanced:\n    units:\n"
+                                "        temperature: K", 1),
+                   "config_kelvin.yaml")
+    check(c_k["celsius"] is False,
+          "layout: advanced.units.temperature: K selects kelvin", failures)
+    c_t = settings(base + "time:\n    from: 100\n    to: 500\n",
+                   "config_time.yaml")
+    check(c_t["bounds"]["time_from"] == 100 and c_t["bounds"]["time_to"] == 500,
+          "layout: the time section sets the window", failures)
+    c_g = settings(base.replace("advanced:\n    nz:",
+                                "advanced:\n    grid:\n        nz:")
+                   .replace("\n    dz:", "\n        dz:"),
+                   "config_grid.yaml")
+    check(c_g["domain"]["nz"] == c_new["domain"]["nz"]
+          and c_g["domain"]["dz"] == c_new["domain"]["dz"],
+          "layout: advanced.grid.nz / dz are read like the flat names",
+          failures)
+
+    rejects(base.replace("advanced:",
+                         "advanced:\n    units:\n"
+                         "        potential_temperature: C", 1),
+            "must be K", "layout: a Celsius potential temperature is "
+                         "rejected")
+    rejects(base.replace("advanced:",
+                         "advanced:\n    units:\n"
+                         "        temperature: F", 1),
+            "must be K or C", "layout: an unknown temperature scale is "
+                              "rejected")
     rejects(base.replace("every_nth_column: 2", "every_nth_colum: 2"),
             "Did you mean 'every_nth_column'",
             "layout: a misspelt key is rejected with a suggestion")
