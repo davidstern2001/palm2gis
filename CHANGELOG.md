@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.27.2
+
+**Fix - canopy `lad_3d.nc` showed nothing as a voxel layer**
+
+- The canopy volume kept PALM's k = 0 level (z = 0), only dz/2 below
+  k = 1, so its z axis was uneven (0, dz/2, 3dz/2, ...). An ArcGIS voxel
+  layer needs a regular z and drew nothing. k = 0 is now dropped, as
+  `voxel.drop_k0` does for the voxel file; it never holds LAD, so the
+  leaf area is unchanged.
+
+## 0.27.1
+
+**Fix - surfaces ignored `project.output_crs`**
+
+- The surface layers (GeoPackage, MultiPatch shapefile, File Geodatabase)
+  were still written in `input.crs`: the 0.26.0 transform had reached the
+  voxel, wind and canopy stages but not `surfaces.py`. Their quads are now
+  built in PALM's CRS and transformed exactly per vertex (z untouched),
+  and the layers carry the output CRS - the same mapping the voxel grid
+  uses, so surfaces, wind and voxel line up.
+- Surface `xs`/`ys`/`zs` are read as float64. The 0.26.0 float64 fix
+  covered `abs_x`/`abs_y` but not the surface quads, which added the
+  origin to float32 values and snapped every corner to 0.5 m in a UTM
+  northing.
+
 ## 0.27.0
 
 **Conservative resampling for `project.output_crs`**

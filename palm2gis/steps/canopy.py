@@ -117,7 +117,12 @@ def stage_canopy(cfg, grid):
     if not cfg.prepare_output(path, "canopy"):
         return
     z_all = grid.z_levels()
-    kz0, kzmax = grid.nz0, grid.nzmax
+    # k = 0 (z = 0) is dropped, as voxel.drop_k0 does for the voxel file:
+    # it is only dz/2 below k = 1, so keeping it made the z axis uneven
+    # (0, dz/2, 3dz/2, ...) and an ArcGIS voxel layer, which needs a
+    # regular z, drew nothing. It never holds LAD - lift_to_absolute puts
+    # the lowest canopy level at k >= 1 - so nothing is lost.
+    kz0, kzmax = max(grid.nz0, 1), grid.nzmax
     # Absolute height for the output axis. lift_to_absolute() below is
     # unrelated - it lifts the terrain-following LAD onto the model
     # grid and still works in RELATIVE levels, as grid.zt is relative.

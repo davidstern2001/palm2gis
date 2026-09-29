@@ -41,9 +41,12 @@ FILL = -9999.0
 # 1. LOAD AND CLASSIFY ELEMENTS
 # ------------------------------
 def _load_geometry(nc):
-    xs = np.asarray(nc.variables["xs"][:])
-    ys = np.asarray(nc.variables["ys"][:])
-    zs = np.asarray(nc.variables["zs"][:])
+    # float64: PALM stores xs/ys/zs as float32, and float32 + origin stays
+    # float32 - a UTM northing of 5.5e6 then resolves only 0.5 m, so every
+    # quad corner was snapped to the nearest half metre.
+    xs = np.asarray(nc.variables["xs"][:], dtype="f8")
+    ys = np.asarray(nc.variables["ys"][:], dtype="f8")
+    zs = np.asarray(nc.variables["zs"][:], dtype="f8")
     zen = np.ma.filled(nc.variables["zenith"][:], FILL)
     az = np.ma.filled(nc.variables["azimuth"][:], FILL)
     return xs, ys, zs, zen, az
@@ -279,8 +282,11 @@ def _element_frames(cfg, grid, nc, its, times, xs, ys, zs, zen, az, idx,
     what GDAL's shapefile driver needs to emit shape type 31.
     """
     sf = cfg["surfaces"]
-    quads = [_element_quad(xs[s], ys[s], zs[s], zen[s], az[s], grid)
-             for s in idx]
+    # Quads are built in PALM's CRS and transformed as a whole into the
+    # output CRS (project.output_crs): exact per vertex, z untouched.
+    quads = list(grid.reproj.geoms(
+        [_element_quad(xs[s], ys[s], zs[s], zen[s], az[s], grid)
+         for s in idx]))
     geoms = [MultiPolygon([q]) for q in quads] if multipatch else quads
     orient = [_orientation(zen[s], az[s]) for s in idx]
 
@@ -321,7 +327,8 @@ def _element_frames(cfg, grid, nc, its, times, xs, ys, zs, zen, az, idx,
             rec[name] = _derive_values(
                 cfg, vals, zs[idx], derive, name=name,
                 src_units=getattr(nc.variables[var], "units", None))
-        yield n, it, gpd.GeoDataFrame(rec, geometry=geoms, crs=grid.crs)
+        yield n, it, gpd.GeoDataFrame(rec, geometry=geoms,
+                                      crs=grid.reproj.crs)
 
 
 def _elements_multipatch(cfg, grid, nc, its, times, xs, ys, zs, zen, az,
@@ -427,8 +434,9 @@ def _elements_gpkg(cfg, grid, nc, its, times, xs, ys, zs, zen, az, sel,
                 "bounds/n_times or disable it.",
                 cfg.disp(path), n_rows)
 
-    geoms = [_element_quad(xs[s], ys[s], zs[s], zen[s], az[s], grid)
-             for s in idx]
+    geoms = list(grid.reproj.geoms(
+        [_element_quad(xs[s], ys[s], zs[s], zen[s], az[s], grid)
+         for s in idx]))
     orient = [_orientation(zen[s], az[s]) for s in idx]
 
     # height above the terrain of that column: separates roofs from ground
@@ -479,7 +487,7 @@ def _elements_gpkg(cfg, grid, nc, its, times, xs, ys, zs, zen, az, sel,
             rec[name] = _derive_values(
                 cfg, vals, zs[idx], derive, name=name,
                 src_units=getattr(nc.variables[var], "units", None))
-        frame = gpd.GeoDataFrame(rec, geometry=geoms, crs=grid.crs)
+        frame = gpd.GeoDataFrame(rec, geometry=geoms, crs=grid.reproj.crs)
         frame.to_file(path, layer=layer, driver="GPKG",
                       mode="w" if n == 0 else "a")
 

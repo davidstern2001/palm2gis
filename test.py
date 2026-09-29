@@ -458,6 +458,10 @@ def verify_outputs(out):
         lad = nc["lad"][:]
         check(int((lad > 0).sum()) == 27,
               "canopy: LAD volume holds every canopy cell", failures)
+        zc = _np_thermo.asarray(nc["z"][:])
+        check(_np_thermo.allclose(_np_thermo.diff(zc), DZ),
+              "canopy: z axis regular (k = 0 dropped) - an ArcGIS voxel "
+              "layer needs it", failures)
         # the test terrain slopes across the tree block, so the SAME
         # canopy must land on different absolute levels per column -
         # which is exactly what the height-above-terrain lift is for
@@ -1623,6 +1627,12 @@ def verify_float64_coords(tmp):
     y = g.abs_y(g.y_stat.astype("f4")) + 0.3
     check(y.dtype == "f8" and abs(float(y[0]) - (ORIGIN_Y + 1.3)) < 1e-6,
           "coords: absolute y keeps sub-0.5 m precision (float64)", failures)
+    from netCDF4 import Dataset
+    from palm2gis.steps.surfaces import _load_geometry
+    with Dataset(tmp / "test_surf") as nc:
+        xs, ys, zs = _load_geometry(nc)[:3]
+    check(xs.dtype == ys.dtype == zs.dtype == "f8",
+          "coords: surface xs/ys/zs read as float64", failures)
     return failures
 
 
