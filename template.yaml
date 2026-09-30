@@ -114,6 +114,8 @@ voxel:
     # derived from theta (which then must be in the file).
     # ah is PALM's own absolute humidity [g/m3] if the file has it,
     # otherwise derived from q (which then must be in the file).
+    # speed is the horizontal wind speed sqrt(u^2+v^2) [m/s] (as in the
+    # wind files).
     # speed_3d is the 3D wind speed sqrt(u^2+v^2+w^2) [m/s] at cell
     # centres; needs u, v, w in the file, but they need not be listed.
     variables: [u, v, w, theta]
@@ -142,19 +144,30 @@ surfaces:
 
 
 # ---------------------------------------------------------------------
-# 7. WIND   sampled at heights above the local surface   (reads data_3d)
+# 7. WIND   gridded at absolute heights, points above the surface
+#           (reads data_3d)
 # ---------------------------------------------------------------------
 # dir_met is the direction the wind blows FROM, clockwise from north.
 wind:
     #enabled: true
-    # Metres above the surface below - the same reference as
-    # region.height_above_surface, so these heights follow terrain AND
-    # rooftops.
+    # GeoPackage only: metres above the surface below - the same reference
+    # as region.height_above_surface, so these follow terrain AND rooftops.
     heights_above_surface: [2.0]
 
-    netcdf:                      # (time, height, y, x): u, v, w, speed,
-        file: '{name}_wind.nc'   # dir_met. ArcGIS Pro: Add Multidimensional
-        #every_nth_column: 1     # Raster Layer -> Vector Field
+    netcdf:                      # ONE FILE PER HEIGHT: (time, z, y, x) with
+        file: '{name}_wind.nc'   # u, v, w, speed, dir_met; written as
+                                 # {name}_wind_z<height>m.nc ({z} in the
+                                 # name places the height yourself).
+                                 # ArcGIS Pro: Add Multidimensional Raster
+                                 # Layer -> Vector Field.
+        #heights: [200.0]        # m ABOVE SEA LEVEL. Left out (default):
+                                 # one file per PALM level of the voxel's
+                                 # range (region.height_above_surface),
+                                 # on exactly the voxel's z. Listed:
+                                 # between two PALM levels the wind is
+                                 # interpolated linearly, NoData where
+                                 # either level is terrain or building
+        #every_nth_column: 1
     gpkg:                        # arrow points (+ optional 3D lines)
         file: null
         #every_nth_column: 1

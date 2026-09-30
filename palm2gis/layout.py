@@ -39,7 +39,8 @@ SCHEMA = {
                  "all_elements_fgdb": _OUT_FILE,
                  "all_elements_multipatch": _OUT_FILE},
     "wind": {"enabled": None, "heights_above_surface": None,
-             "netcdf": {"file": None, "every_nth_column": None},
+             "netcdf": {"file": None, "heights": None,
+                        "every_nth_column": None},
              "gpkg": {"file": None, "every_nth_column": None,
                       "arrows_3d": None, "arrow_length_per_ms": None,
                       "tilt_with_w": None}},
@@ -213,8 +214,12 @@ def _file(block, name, where):
         raise LayoutError(f"{where}.file must be a filename or null, "
                           f"got {f!r}.")
     f = f.replace("{name}", name)
-    if "{" in f or "}" in f:
-        raise LayoutError(f"{where}.file: only {{name}} can be filled in, "
+    # The wind netCDF is one file per height: {z} is filled in per file.
+    rest = f.replace("{z}", "") if where == "wind.netcdf" else f
+    if "{" in rest or "}" in rest:
+        allowed = ("{name} and {z}" if where == "wind.netcdf"
+                   else "{name}")
+        raise LayoutError(f"{where}.file: only {allowed} can be filled in, "
                           f"got {f!r}.")
     ext = _EXTENSIONS[where.rsplit(".", 1)[-1]]
     if not f.lower().endswith(ext):
@@ -422,9 +427,10 @@ def translate(user):
             "do_velocity": bool(vel), "derive_ta": "ta" in variables,
             "derive_ah": "ah" in variables,
             "derive_speed_3d": "speed_3d" in variables,
+            "derive_speed": "speed" in variables,
             "scalars": [v for v in variables
                         if v not in VELOCITY
-                        and v not in ("ta", "ah", "speed_3d")],
+                        and v not in ("ta", "ah", "speed", "speed_3d")],
         }
         _set(out, "voxel", "drop_k0",
              _bool(adv.get("voxel_drop_k0"),
@@ -490,15 +496,32 @@ def translate(user):
     gp_blk = (wd or {}).get("gpkg") or {}
     if wd_on and (wd_nc or wd_gp):
         heights = wd.get("heights_above_surface")
-        if not isinstance(heights, (list, tuple)) or not heights:
-            raise LayoutError("wind.heights_above_surface must list at "
-                              "least one height, e.g. [2.0]; got "
-                              f"{heights!r}.")
-        for h in heights:
-            _number(h, "wind.heights_above_surface", 0)
-        if len(set(heights)) != len(heights):
-            raise LayoutError("wind.heights_above_surface lists a height "
-                              "more than once.")
+        if wd_gp:
+            if not isinstance(heights, (list, tuple)) or not heights:
+                raise LayoutError("wind.heights_above_surface must list at "
+                                  "least one height for wind.gpkg, e.g. "
+                                  f"[2.0]; got {heights!r}.")
+            for h in heights:
+                _number(h, "wind.heights_above_surface", 0)
+            if len(set(heights)) != len(heights):
+                raise LayoutError("wind.heights_above_surface lists a "
+                                  "height more than once.")
+        grid_heights = nc_blk.get("heights")
+        if wd_nc and grid_heights is not None:
+            # Left out: every PALM level of the voxel's vertical range.
+            if not isinstance(grid_heights, (list, tuple)) or not grid_heights:
+                raise LayoutError(
+                    "wind.netcdf.heights must list heights ABOVE SEA LEVEL "
+                    "[m], e.g. [200, 210], or be left out for one file per "
+                    f"level of the voxel range; got {grid_heights!r}.")
+            for h in grid_heights:
+                if h is None:
+                    raise LayoutError("wind.netcdf.heights holds an empty "
+                                      "entry.")
+                _number(h, "wind.netcdf.heights", None)
+            if len(set(grid_heights)) != len(grid_heights):
+                raise LayoutError("wind.netcdf.heights lists a height more "
+                                  "than once.")
         _number(nc_blk.get("every_nth_column"),
                 "wind.netcdf.every_nth_column", 1, integer=True)
         _number(gp_blk.get("every_nth_column"),
@@ -510,8 +533,11 @@ def translate(user):
         if not data_3d:
             raise LayoutError("wind needs input.data_3d.")
         out["wind"] = {"enabled": True, "file_from": data_3d,
-                       "heights_agl": [float(h) for h in heights],
                        "grid_to": wd_nc, "file_to": wd_gp}
+        if wd_gp:
+            out["wind"]["heights_agl"] = [float(h) for h in heights]
+        if wd_nc and grid_heights is not None:
+            out["wind"]["grid_heights"] = [float(h) for h in grid_heights]
         _set(out, "wind", "grid_stride", nc_blk.get("every_nth_column"))
         _set(out, "wind", "stride", gp_blk.get("every_nth_column"))
         _set(out, "wind", "write_lines_3d", gp_blk.get("arrows_3d"))
@@ -583,6 +609,7 @@ MESSAGE_NAMES = {
     "Point file_from at": "Point the input file at",
     "wind.stride": "wind.gpkg.every_nth_column",
     "wind.grid_stride": "wind.netcdf.every_nth_column",
+    "wind.grid_heights": "wind.netcdf.heights",
     "wind.heights_agl": "wind.heights_above_surface",
 }
 _MESSAGE_RE = re.compile(

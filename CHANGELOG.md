@@ -1,5 +1,37 @@
 # Changelog
 
+## 0.28.0
+
+**Wind netCDF: one file per ABSOLUTE height** *(changes the wind output)*
+
+- `wind.netcdf` now writes one netCDF per absolute height - metres
+  **above sea level**, the voxel's z - in place of the single
+  `(time, height, y, x)` file at heights above the ground. Each file is
+  `(time, z, y, x)`, `z` of length 1 holding the height, all selected
+  records, with `u`, `v`, `w`, `speed` and `dir_met` as before, for
+  ArcGIS Pro's flow / vector-field renderers.
+- **Default heights = the voxel's levels:** every PALM level from the
+  bottom of the cut up to `region.height_above_surface` above the highest
+  surface, with the voxel's k = 0 rule, so each file lies exactly on one
+  voxel z (no interpolation).
+- `wind.netcdf.heights` (optional) lists specific heights instead; one
+  between two PALM levels is interpolated linearly, NoData where either
+  level is inside terrain or a building. Heights outside the levels are
+  skipped with a warning.
+- Names: `<file>_z<height>m.nc` (e.g. `holesovice_stern_adapt_wind_z200m.nc`),
+  or `{z}` in `wind.netcdf.file` places the height.
+- NoData inside terrain and buildings comes from PALM's own scalar mask,
+  as in the voxel.
+- `wind.heights_above_surface` now applies to the GeoPackage only and is
+  required only with `wind.gpkg`. Legacy layout: `wind.grid_heights`.
+
+**Voxel `speed` (horizontal)**
+
+- `speed` in `voxel.variables` adds the horizontal wind speed
+  sqrt(u^2 + v^2) (CF `wind_speed`), the same quantity as in the wind
+  files. It used to be looked up in the PALM file and fail ("this file
+  does not contain 'speed'"). `speed_3d` still gives the 3D magnitude.
+
 ## 0.27.5
 
 **Voxel value histograms and a suggested display range**

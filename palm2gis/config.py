@@ -162,6 +162,9 @@ DEFAULTS = {
         # in the file; they are written only if do_velocity is also on.
         # Not the wind stage's `speed`, which is horizontal.
         "derive_speed_3d": False,
+        # Write `speed` - the HORIZONTAL wind speed sqrt(u^2 + v^2), the
+        # same quantity as the wind stage's `speed`. Needs u and v.
+        "derive_speed": False,
     },
     "surfaces": {
         "enabled": False,
@@ -213,9 +216,16 @@ DEFAULTS = {
                                    # surface (terrain + buildings) [m]
         "stride": 1,               # keep every n-th grid column
         # Gridded NetCDF for ArcGIS Pro's flow / vector-field renderers:
-        # (time, height, y, x) with u, v, w, speed and dir_met. Written
+        # ONE FILE PER ABSOLUTE HEIGHT in grid_heights, each (time, z, y, x)
+        # with u, v, w, speed and dir_met and z of length 1. Written
         # alongside the GeoPackage, not instead of it.
-        "grid_to": None,           # output .nc (relative -> output_dir)
+        "grid_to": None,           # output .nc pattern; {z} = the height,
+                                   # else _z<height>m is added before .nc
+        "grid_heights": None,      # heights ABOVE SEA LEVEL [m]; each is
+                                   # interpolated between the two PALM
+                                   # levels around it. None: every PALM
+                                   # level of the voxel's vertical range
+                                   # (region.height_above_surface)
         # Thinning for grid_to only. Default 1 (full resolution): the
         # renderer thins its own streamlines, and a 200x200x7x2 grid of
         # five float32 variables is about 11 MB.
@@ -644,7 +654,8 @@ class Config:
                                       "voxel.enabled: true.")
             if not (c["voxel"]["do_velocity"] or c["voxel"]["scalars"]
                     or c["voxel"]["derive_ta"] or c["voxel"]["derive_ah"]
-                    or c["voxel"]["derive_speed_3d"]):
+                    or c["voxel"]["derive_speed_3d"]
+                    or c["voxel"]["derive_speed"]):
                 raise ConfigError("voxel: nothing to write - enable "
                                   "do_velocity, derive_ta, derive_ah or "
                                   "derive_speed_3d, "
@@ -664,10 +675,28 @@ class Config:
                 raise ConfigError("wind: set file_to (GeoPackage), grid_to "
                                   "(NetCDF) or both when wind.enabled: "
                                   "true.")
-            if (not isinstance(c["wind"]["heights_agl"], (list, tuple))
+            if c["wind"]["file_to"] and (
+                    not isinstance(c["wind"]["heights_agl"], (list, tuple))
                     or not c["wind"]["heights_agl"]):
                 raise ConfigError("wind.heights_agl must list at least one "
                                   "height.")
+            gh = c["wind"]["grid_heights"]
+            if c["wind"]["grid_to"] and gh is not None:
+                # None: every PALM level of the voxel range.
+                if not isinstance(gh, (list, tuple)) or not gh:
+                    raise ConfigError(
+                        "wind.grid_heights must list heights ABOVE SEA "
+                        "LEVEL [m], e.g. [200, 210], or be left out for "
+                        "every level of the voxel range; got {!r}."
+                        .format(gh))
+                for h in gh:
+                    if isinstance(h, bool) or not isinstance(h, (int,
+                                                                 float)):
+                        raise ConfigError("wind.grid_heights: {!r} is not "
+                                          "a number.".format(h))
+                if len(set(float(h) for h in gh)) != len(gh):
+                    raise ConfigError("wind.grid_heights lists a height "
+                                      "more than once.")
             for key in ("stride", "grid_stride"):
                 v = c["wind"][key]
                 if not isinstance(v, int) or isinstance(v, bool) or v < 1:

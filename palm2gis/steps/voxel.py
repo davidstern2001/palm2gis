@@ -262,7 +262,8 @@ def stage_voxel(cfg, grid):
                          "PALM's ta, or theta to derive it from.")
         do_velocity = bool(vx["do_velocity"])
         derive_speed = bool(vx["derive_speed_3d"])
-        need_uvw = do_velocity or derive_speed
+        derive_speed_h = bool(vx.get("derive_speed"))
+        need_uvw = do_velocity or derive_speed or derive_speed_h
         if do_velocity:
             require_variables(
                 nc, ["u", "v", "w"], "voxel", vx["file_from"],
@@ -273,6 +274,11 @@ def stage_voxel(cfg, grid):
                 nc, ["u", "v", "w"], "voxel", vx["file_from"],
                 hint="speed_3d is computed from u, v and w. Point file_from "
                      "at a file holding all three, or drop speed_3d.")
+        if derive_speed_h:
+            require_variables(
+                nc, ["u", "v", "w"], "voxel", vx["file_from"],
+                hint="speed is computed from u and v. Point file_from at "
+                     "a file holding them, or drop speed.")
         require_variables(nc, [v for v in scalars if v != "ta"], "voxel",
                           vx["file_from"],
                           hint="Adjust voxel.scalars to what this file "
@@ -300,6 +306,8 @@ def stage_voxel(cfg, grid):
             out_vars = out_vars + ["ta"]
         if derive_ah:
             out_vars = out_vars + ["ah"]
+        if derive_speed_h:
+            out_vars = out_vars + ["speed"]
         if derive_speed:
             out_vars = out_vars + ["speed_3d"]
 
@@ -411,6 +419,16 @@ def stage_voxel(cfg, grid):
                         cfg["surface_pressure"])
                     ov.palm2gis_pt_surface = float(cfg["pt_surface"])
                     continue
+                if var == "speed" and derive_speed_h:
+                    # Horizontal, as CF's wind_speed and the wind stage's
+                    # `speed`; unchanged by the rotation to east/north.
+                    ov.units = "m s-1"
+                    ov.standard_name = "wind_speed"
+                    ov.long_name = long_name("speed")
+                    ov.comment = ("sqrt(u^2 + v^2) of u, v interpolated "
+                                  "to cell centres (horizontal)")
+                    ov.derived_from = "u v"
+                    continue
                 if var == "speed_3d" and derive_speed:
                     # No CF standard_name: CF's wind_speed is horizontal.
                     ov.units = "m s-1"
@@ -496,6 +514,11 @@ def stage_voxel(cfg, grid):
                                            grid.ny0, grid.nymax,
                                            grid.nx0, grid.nxmax)
                             for var in ("u", "v", "w")}
+                    if derive_speed_h:
+                        sh = np.hypot(comp["u"], comp["v"])
+                        sh = np.array(og.take(sh, valid=air), copy=True)
+                        sh[mask_out] = FILL
+                        put("speed", q, sh)
                     if derive_speed:
                         sp = np.sqrt(comp["u"] ** 2 + comp["v"] ** 2
                                      + comp["w"] ** 2)

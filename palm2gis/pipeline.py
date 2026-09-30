@@ -71,7 +71,14 @@ def stage_outputs(cfg, stage):
         return out
     if stage == "wind":
         wd = cfg["wind"]
-        return [cfg.out_path(p) for p in (wd["file_to"], wd["grid_to"]) if p]
+        out = [cfg.out_path(wd["file_to"])] if wd["file_to"] else []
+        # Without an explicit list the heights are the voxel's levels,
+        # known only once the 3D file is read, so they are not listed.
+        if wd["grid_to"] and wd["grid_heights"]:
+            from .steps.wind import level_path
+            out += [cfg.out_path(level_path(wd["grid_to"], h))
+                    for h in (wd["grid_heights"] or [])]
+        return out
     if stage == "canopy":
         cn = cfg["canopy"]
         out = []
