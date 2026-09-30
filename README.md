@@ -202,7 +202,7 @@ Quote clock times. Unquoted, YAML 1.1 reads `13:00` as the sexagesimal number 78
 
 ### voxel — the 3D volume in ArcGIS Pro
 
-The 3D output is destaggered onto scalar mass centres (`u` averaged over the two x-faces, `v` over the y-faces, `w` over the z-faces), cut by `region`, and written with everything a voxel layer needs: `(time, z, y, x)` dimension order, absolute `x`/`y` with CF standard names, a `crs` grid-mapping variable carrying ASCII WKT1 (`spatial_ref`, `crs_wkt`) and an Esri PE string, plus the Esri PE string as a global attribute (where the voxel layer reads it), and CF time (`seconds since <origin_time>`). Cells inside terrain or buildings carry the `_FillValue` and render as empty space. With `advanced.netcdf.voxel_drop_k0: true` (default) the z = 0 level is dropped, making the vertical spacing uniform (`dz/2, 3dz/2, …`), which voxel layers handle best. Each variable also carries CF `actual_range`, its minimum and maximum over **all** written records (the log prints them too): ArcGIS Pro computes a voxel layer's statistics from the loaded time step, so its default stretch fits one record and hides the change over time. Use that range as the layer's Min/Max if ArcGIS does not pick it up.
+The 3D output is destaggered onto scalar mass centres (`u` averaged over the two x-faces, `v` over the y-faces, `w` over the z-faces), cut by `region`, and written with everything a voxel layer needs: `(time, z, y, x)` dimension order, absolute `x`/`y` with CF standard names, a `crs` grid-mapping variable carrying ASCII WKT1 (`spatial_ref`, `crs_wkt`) and an Esri PE string, plus the Esri PE string as a global attribute (where the voxel layer reads it), and CF time (`seconds since <origin_time>`). Cells inside terrain or buildings carry the `_FillValue` and render as empty space. With `advanced.netcdf.voxel_drop_k0: true` (default) the z = 0 level is dropped, making the vertical spacing uniform (`dz/2, 3dz/2, …`), which voxel layers handle best. Each variable also carries CF `actual_range`, its minimum and maximum over **all** written records (the log prints them too): ArcGIS Pro computes a voxel layer's statistics from the loaded time step, so its default stretch fits one record and hides the change over time. That full range is set by a few extreme cells, though, so palm2gis also bins every value of every record and writes `<name>_voxel_ranges.csv` (min, p1 … p99, max and a **suggested Min/Max = p2 … p98** per variable), `<name>_voxel_histogram.csv` and, with `matplotlib` installed, `<name>_voxel_histogram.png` (one histogram per variable with p2/p98 marked). Type the suggested Min/Max into the voxel layer's symbology; each variable also carries it as `palm2gis_display_range`.
 
 ### Which PALM file goes where
 
@@ -261,7 +261,8 @@ python run_palm2gis.py -c CONFIG [options]
   -v, --verbose     DEBUG-level logging (per-timestep progress)
   -q, --quiet       WARNING-level logging only
   --log-datetime    full date in timestamps (time-only is the default)
-  --log-file PATH   also append the log to a file (uncoloured, dated);
+  --log-file PATH   also write this run's log to a file, replacing the
+                    previous run's (uncoloured, dated);
                     defaults to <output_dir>/palm2gis.log
   --ignore-state    skip on file existence alone, ignoring the recorded
                     config hash (pre-0.10.0 behaviour)

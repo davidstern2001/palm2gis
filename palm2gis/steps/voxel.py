@@ -28,6 +28,7 @@ from pyproj import CRS
 
 from ..descriptions import long_name
 from ..log import debug, get_logger, info, warning
+from .histogram import voxel_statistics, write_sidecars
 from .georef import (check_product, check_raw_input, require_variables,
                      resolve_z_range, select_times)
 from .thermo import absolute_humidity, convert_temperature, \
@@ -572,9 +573,13 @@ def stage_voxel(cfg, grid):
                     lo, hi = ranges[var]
                     fout.variables[var].actual_range = np.array(
                         [lo, hi], dtype="f4")
-                    info("[voxel] {} range over all {} records: {:.4g} .. "
-                         "{:.4g} {}", var, len(its), lo, hi,
-                         getattr(fout.variables[var], "units", ""))
+            # The full-run min/max are single extreme cells; a histogram
+            # of every value gives a display range (p2 .. p98) that is not.
+            stats = voxel_statistics(fout, out_vars, len(its), ranges,
+                                     FILL)
+
+    for p in write_sidecars(stats, file_to, len(its)):
+        info("[voxel] wrote {}", cfg.disp(p))
 
     info("[voxel] wrote {}: {} x {} x {} x {} (t,z,{},{}), {}",
          cfg.disp(file_to), len(its), z_out.size, og.shape[0], og.shape[1],

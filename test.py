@@ -300,10 +300,30 @@ def verify_outputs(out):
             rng = np.asarray(nc[var].actual_range)
             ok_rng &= bool(np.allclose(rng, [a.min(), a.max()]))
         t0 = np.asarray(nc["theta"][0]); t0 = t0[t0 != -9999.0]
+        # Display range = p2 .. p98 of every value over every record,
+        # exact to the fine-histogram bin width.
+        th = np.asarray(nc["theta"][:]); th = th[th != -9999.0]
+        p2, p98 = np.percentile(th, [2, 98])
+        dr = np.asarray(nc["theta"].palm2gis_display_range, dtype="f8")
+        tol = 2 * (th.max() - th.min()) / 4000
+        check(abs(dr[0] - p2) <= tol and abs(dr[1] - p98) <= tol,
+              "voxel: palm2gis_display_range is p2 .. p98 over all records",
+              failures)
         check(ok_rng and nc["time"].size > 1
               and float(nc["theta"].actual_range[1]) > float(t0.max()),
               "voxel: actual_range covers all records (wider than the "
               "first)", failures)
+
+    import csv as _csv
+    with open(out / "test_voxel_ranges.csv", newline="") as f:
+        rows = {r["variable"]: r for r in _csv.DictReader(f)}
+    check(set(rows) >= {"u", "v", "w", "theta"}
+          and all(float(r["min"]) <= float(r["suggested_min"])
+                  <= float(r["suggested_max"]) <= float(r["max"])
+                  for r in rows.values())
+          and (out / "test_voxel_histogram.csv").exists(),
+          "voxel: ranges and histogram CSVs written, min <= p2 <= p98 <= max",
+          failures)
 
     # -- derived air temperature -------------------------------------------
     # PALM's basic state: Pi linear in z, (p_s/p0)^kappa at z = 0, slope
@@ -1630,6 +1650,18 @@ advanced:
     return failures
 
 
+def verify_log_last_run(tmp, pipeline_main):
+    """<output_dir>/palm2gis.log holds the last run only, not every run."""
+    failures = []
+    cfg = str(tmp / "config.yaml")
+    pipeline_main(["-c", cfg])
+    pipeline_main(["-c", cfg])
+    text = (tmp / "out" / "palm2gis.log").read_text(encoding="utf-8")
+    check(text.count("palm2gis finished") == 1,
+          "log: palm2gis.log holds only the last run", failures)
+    return failures
+
+
 def verify_float64_coords(tmp):
     """Absolute coordinates are float64. PALM stores x/y as float32 and
     float32 + origin stayed float32, rounding a UTM northing to 0.5 m."""
@@ -1714,6 +1746,7 @@ def main():
         print("Verifying output in EPSG:4326 ...")
         failures += verify_output_crs(tmp, pipeline_main)
         failures += verify_float64_coords(tmp)
+        failures += verify_log_last_run(tmp, pipeline_main)
 
         if failures:
             print(f"\nTEST FAILED: {len(failures)} check(s) failed.")

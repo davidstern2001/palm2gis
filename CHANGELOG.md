@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.27.5
+
+**Voxel value histograms and a suggested display range**
+
+- The full-run min/max (`actual_range`, 0.27.3) are single extreme cells,
+  so a voxel stretch over them left most of the field in one colour.
+  After writing, the voxel stage bins every value of every record and
+  writes next to the voxel file:
+  - `<name>_voxel_ranges.csv` - per variable min, p1, p2, p5, p50, p95,
+    p98, p99, max and the **suggested Min/Max = p2 .. p98**;
+  - `<name>_voxel_histogram.csv` - the binned counts;
+  - `<name>_voxel_histogram.png` - one histogram per variable with p2 and
+    p98 marked (needs `matplotlib`, now an optional requirement).
+- Each voxel variable also carries `palm2gis_display_range` = [p2, p98],
+  and the log prints the suggestion per variable.
+- Percentiles come from a 4000-bin histogram between min and max, exact
+  to (max - min) / 4000; one extra read of the finished file, one record
+  at a time.
+
+## 0.27.4
+
+**`palm2gis.log` holds the last run only**
+
+- The log file (default `<output_dir>/palm2gis.log`, or `--log-file`) is
+  now replaced at the start of each run instead of appended to, so it
+  shows exactly the run just computed. It used to grow with every rerun.
+
 ## 0.27.3
 
 **Voxel value range over all records (`actual_range`)**

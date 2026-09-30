@@ -107,7 +107,10 @@ def setup_logging(verbosity="info", log_datetime=False, log_file=None):
         from pathlib import Path
         p = Path(log_file)
         p.parent.mkdir(parents=True, exist_ok=True)
-        fh = logging.FileHandler(p, mode="a", encoding="utf-8")
+        # mode "w": the file holds the LAST run only. Appending made it
+        # grow with every rerun, and the run just computed had to be
+        # found under all the earlier ones.
+        fh = logging.FileHandler(p, mode="w", encoding="utf-8")
         fh.setLevel(level)
         # Uncoloured and always dated: ANSI escapes make a file unreadable
         # in an editor, and a log read weeks later needs the date.

@@ -9,3 +9,5 @@ shapely>=2.0
 pyarrow>=14
 # optional: ~5x faster conservative resampling with project.output_crs
 scipy>=1.8
+# optional: voxel value histogram plot (<name>_voxel_histogram.png)
+matplotlib>=3.5

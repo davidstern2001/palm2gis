@@ -123,8 +123,9 @@ def main(argv=None):
     ap.add_argument("-q", "--quiet", action="store_true",
                     help="WARNING-level logging only")
     ap.add_argument("--log-file", default=None, metavar="PATH",
-                    help="also append the log to this file (uncoloured, "
-                         "always dated); default <output_dir>/palm2gis.log, "
+                    help="also write the log of this run to this file, "
+                         "replacing the previous run's (uncoloured, always "
+                         "dated); default <output_dir>/palm2gis.log, "
                          "disable with --log-file ''")
     # argparse's own "version" action so it works WITHOUT -c: the flag is
     # useless if it still demands a config file.
