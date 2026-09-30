@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.27.3
+
+**Voxel value range over all records (`actual_range`)**
+
+- An ArcGIS voxel layer computes its statistics from the data it has
+  loaded - in practice the current time step - so its stretch fitted one
+  record and hid the change between records (a warming or cooling
+  temperature field looked constant).
+- Every voxel variable now carries CF `actual_range` = [min, max] over
+  ALL written records (NoData excluded), and the log prints it per
+  variable. Whether ArcGIS Pro reads `actual_range` is undocumented; the
+  logged range is the one to enter as the layer's Min/Max otherwise.
+- Accumulated while writing, so no second pass over the file.
+
 ## 0.27.2
 
 **Fix - canopy `lad_3d.nc` showed nothing as a voxel layer**

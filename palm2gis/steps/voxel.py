@@ -469,6 +469,24 @@ def stage_voxel(cfg, grid):
             mask_out = og.mask(terrain_mask)
             air = ~terrain_mask
 
+            # Value range of every variable over ALL written records. An
+            # ArcGIS voxel layer computes its statistics from the data it
+            # has loaded - in practice the current time step - so its
+            # stretch fits one record and hides the change between them.
+            # The range over the whole animation is kept here and written
+            # as CF `actual_range` below.
+            ranges = {}
+
+            def put(var, q, val):
+                fout.variables[var][q, ...] = val
+                good = np.asarray(val)
+                good = good[np.isfinite(good) & (good != FILL)]
+                if good.size:
+                    lo, hi = float(good.min()), float(good.max())
+                    old = ranges.get(var)
+                    ranges[var] = ((lo, hi) if old is None
+                                   else (min(old[0], lo), max(old[1], hi)))
+
             for q, it in enumerate(its):
                 debug("[voxel] time {} ({:.0f} s)", it, times[it])
                 if need_uvw:
@@ -482,7 +500,7 @@ def stage_voxel(cfg, grid):
                                      + comp["w"] ** 2)
                         sp = np.array(og.take(sp, valid=air), copy=True)
                         sp[mask_out] = FILL
-                        fout.variables["speed_3d"][q, ...] = sp
+                        put("speed_3d", q, sp)
                     if do_velocity:
                         # Taken onto the output grid and turned from PALM's
                         # grid axes into the output CRS's east/north before
@@ -494,7 +512,7 @@ def stage_voxel(cfg, grid):
                         for var in ("u", "v", "w"):
                             val = np.array(out[var], copy=True)
                             val[mask_out | ~np.isfinite(val)] = FILL
-                            fout.variables[var][q, ...] = val
+                            put(var, q, val)
                 for var in scalars:
                     val = np.ma.filled(
                         nc.variables[var][it, kz0:kzmax,
@@ -506,7 +524,7 @@ def stage_voxel(cfg, grid):
                     val = np.array(og.take(val, valid=air & (val != FILL)),
                                    copy=True)
                     val[mask_out] = FILL
-                    fout.variables[var][q, ...] = val
+                    put(var, q, val)
                 if derive_ta:
                     th = np.ma.masked_invalid(np.ma.masked_equal(
                         nc.variables["theta"][it, kz0:kzmax,
@@ -517,7 +535,7 @@ def stage_voxel(cfg, grid):
                     ta = np.array(og.take(ta, valid=air & (ta != FILL)),
                                   copy=True)
                     ta[mask_out] = FILL
-                    fout.variables["ta"][q, ...] = ta
+                    put("ta", q, ta)
                 if derive_ah:
                     fields = {}
                     for name in ("q", ah_temp):
@@ -547,7 +565,16 @@ def stage_voxel(cfg, grid):
                     ah = np.array(og.take(ah, valid=air & (ah != FILL)),
                                   copy=True)
                     ah[mask_out] = FILL
-                    fout.variables["ah"][q, ...] = ah
+                    put("ah", q, ah)
+
+            for var in out_vars:
+                if var in ranges:
+                    lo, hi = ranges[var]
+                    fout.variables[var].actual_range = np.array(
+                        [lo, hi], dtype="f4")
+                    info("[voxel] {} range over all {} records: {:.4g} .. "
+                         "{:.4g} {}", var, len(its), lo, hi,
+                         getattr(fout.variables[var], "units", ""))
 
     info("[voxel] wrote {}: {} x {} x {} x {} (t,z,{},{}), {}",
          cfg.disp(file_to), len(its), z_out.size, og.shape[0], og.shape[1],

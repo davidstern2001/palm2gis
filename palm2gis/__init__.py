@@ -6,4 +6,4 @@ Stages:
 See template.yaml and README.md for usage.
 """
 
-__version__ = "0.27.2"
+__version__ = "0.27.3"

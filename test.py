@@ -291,6 +291,19 @@ def verify_outputs(out):
         check(abs(float(u[u != -9999.0].mean()) - 2.0) < 0.1,
               "voxel: destaggered u close to the prescribed 2.0 m/s",
               failures)
+        # actual_range spans EVERY record, not the first one: an ArcGIS
+        # voxel layer's own statistics come from the loaded time step.
+        ok_rng = True
+        for var in ("u", "theta"):
+            a = np.asarray(nc[var][:])
+            a = a[a != -9999.0]
+            rng = np.asarray(nc[var].actual_range)
+            ok_rng &= bool(np.allclose(rng, [a.min(), a.max()]))
+        t0 = np.asarray(nc["theta"][0]); t0 = t0[t0 != -9999.0]
+        check(ok_rng and nc["time"].size > 1
+              and float(nc["theta"].actual_range[1]) > float(t0.max()),
+              "voxel: actual_range covers all records (wider than the "
+              "first)", failures)
 
     # -- derived air temperature -------------------------------------------
     # PALM's basic state: Pi linear in z, (p_s/p0)^kappa at z = 0, slope
