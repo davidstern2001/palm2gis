@@ -2,20 +2,20 @@
 
 **PALM outputs → ArcGIS Pro / QGIS layers** — companion to `palm_preproc` and `palm_postproc`.
 
-From a PALM run's static driver and NetCDF outputs, `palm2gis` produces georeferenced GIS layers: a CF-compliant NetCDF that ArcGIS Pro opens directly as a 3D Voxel Layer (destaggered velocities and scalars, terrain as NoData), surface temperatures on every ground, roof and wall element as time-enabled 3D polygons, and pedestrian-level wind vectors sampled at heights above the local surface. Every layer is written in absolute projected coordinates taken from the static driver's `origin_x`/`origin_y`, so it lands in the right place on the map with no manual shifting. It began as an adaptation of `paraview_vis`, a PALM visualisation script by [Martin Bureš](https://www.cs.cas.cz/staff/buresm/en) (Institute of Computer Science, Czech Academy of Sciences), and keeps its configuration concepts (domain, subdomain cut, timestep window) while targeting GIS software rather than ParaView. See [Origins and attribution](#origins-and-attribution).
+From a PALM run's static driver and NetCDF outputs, `palm2gis` produces georeferenced GIS layers: a CF-compliant NetCDF that ArcGIS Pro opens directly as a 3D Voxel Layer (destaggered velocities and scalars, terrain as NoData), surface temperatures on every ground, roof and wall element as time-enabled 3D polygons, gridded wind at absolute heights for ArcGIS Pro's flow renderer, and the plant canopy's leaf area density as a voxel NetCDF. Every layer is written in absolute projected coordinates taken from the static driver's `origin_x`/`origin_y`, so it lands in the right place on the map with no manual shifting. It began as an adaptation of `paraview_vis`, a PALM visualisation script by [Martin Bureš](https://www.cs.cas.cz/staff/buresm/en) (Institute of Computer Science, Czech Academy of Sciences), and keeps its configuration concepts (domain, subdomain cut, timestep window) while targeting GIS software rather than ParaView. See [Origins and attribution](#origins-and-attribution).
 
 ---
 
 ## Table of contents
 
-- [How it works (the three stages)](#how-it-works-the-three-stages)
+- [How it works (the four stages)](#how-it-works-the-four-stages)
 - [Installing and running](#installing-and-running)
 - [Files you get back, and how to load them](#files-you-get-back-and-how-to-load-them)
 - [Configuration](#configuration)
 - [Stage details](#stage-details)
   - [voxel — the 3D volume in ArcGIS Pro](#voxel--the-3d-volume-in-arcgis-pro)
   - [surfaces — roofs, ground, and walls](#surfaces--roofs-ground-and-walls)
-  - [wind — vectors at heights above ground](#wind--vectors-at-heights-above-ground)
+  - [wind — gridded at absolute heights](#wind--gridded-at-absolute-heights)
 - [Command-line reference](#command-line-reference)
 - [Things worth knowing](#things-worth-knowing)
 - [Origins and attribution](#origins-and-attribution)
@@ -23,7 +23,7 @@ From a PALM run's static driver and NetCDF outputs, `palm2gis` produces georefer
 
 ---
 
-## How it works (the three stages)
+## How it works (the four stages)
 
 Every run first reads the **static driver** (and optionally the `_p3d` namelist for `nz`/`dz`): it provides the grid geometry, the terrain + building elevation, the domain origin and `origin_time`, and converts the metre-based `region` section into grid index ranges shared by all stages. Then the enabled stages run in order:
 
@@ -31,8 +31,8 @@ Every run first reads the **static driver** (and optionally the `_p3d` namelist 
 |---|-------|------------------|
 | 1 | `voxel` | CF-compliant NetCDF for the ArcGIS Pro Voxel Layer — destaggered `u`/`v`/`w` plus chosen scalars on `(time, z, y, x)`, terrain and building cells as NoData |
 | 2 | `surfaces` | Every ground, roof and wall element as a time-enabled PolygonZ quad: GeoPackage (QGIS), MultiPatch shapefile and File Geodatabase (ArcGIS) |
-| 4 | `canopy` | Plant canopy from the static driver: the LAD volume lifted onto absolute heights, as a voxel NetCDF |
 | 3 | `wind` | Gridded netCDF per absolute height with `u`, `v`, `w`, `speed`, `dir_met` per timestep, for ArcGIS Pro's flow / vector-field renderers — all heights in one folder |
+| 4 | `canopy` | Plant canopy from the static driver: the LAD volume lifted onto absolute heights, as a voxel NetCDF |
 
 Each stage is enabled/disabled in its own config section; the order (and the default for `--stages`) is the `stages:` list.
 
