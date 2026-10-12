@@ -211,14 +211,10 @@ DEFAULTS = {
     "wind": {
         "enabled": False,
         "file_from": None,         # DATA_3D_NETCDF* (needs u, v)
-        "file_to": None,           # output .gpkg (relative -> output_dir)
-        "heights_agl": [2.0],      # sampling heights above the LOCAL
-                                   # surface (terrain + buildings) [m]
-        "stride": 1,               # keep every n-th grid column
         # Gridded NetCDF for ArcGIS Pro's flow / vector-field renderers:
         # ONE FILE PER ABSOLUTE HEIGHT in grid_heights, each (time, z, y, x)
-        # with u, v, w, speed and dir_met and z of length 1. Written
-        # alongside the GeoPackage, not instead of it.
+        # with u, v, w, speed and dir_met and z of length 1, all in one
+        # folder named after the pattern (x_wind.nc -> x_wind/).
         "grid_to": None,           # output .nc pattern; {z} = the height,
                                    # else _z<height>m is added before .nc
         "grid_heights": None,      # heights ABOVE SEA LEVEL [m]; each is
@@ -230,31 +226,14 @@ DEFAULTS = {
         # renderer thins its own streamlines, and a 200x200x7x2 grid of
         # five float32 variables is about 11 MB.
         "grid_stride": 1,
-        # A second layer, `wind_3d`, of LineStringZ arrows at the TRUE
-        # sample height (local surface + height_agl). The point layer holds
-        # 2D geometry with the height only as an attribute, so in a 3D
-        # scene every level collapses onto the ground and the 2 m and 10 m
-        # samples land on top of each other. Both layers are written: a
-        # line layer reads badly from directly above, a flat point layer
-        # reads badly in a scene.
-        "write_lines_3d": False,
-        # Arrow length in metres per m/s. Has to suit the domain: a 1 m
-        # Holesovice cut and a 10 m Prague cut want very different values.
-        "arrow_scale": 2.0,
-        # Tilt the arrows with the vertical velocity. Off by default: it
-        # shows updraughts in street canyons but is harder to read against
-        # buildings. `speed` and `dir_met` stay horizontal either way, so
-        # the two layers remain comparable; with this on, `w` is also
-        # written as a field.
-        "include_w": False,
     },
     # Write QGIS style sidecars (<layer>.qml, plus an embedded style in
     # each GeoPackage) so layers open with their time settings already
     # configured: the `time` field recognised on the vector layers. Harmless for ArcGIS, which ignores
     # them.
     "qgis_styles": True,
-    # Add a 3D renderer block to the vector styles, so wall polygons and
-    # wind arrows keep their true height in a QGIS 3D scene instead of
+    # Add a 3D renderer block to the vector styles, so wall polygons
+    # keep their true height in a QGIS 3D scene instead of
     # being draped on the terrain. The 3D symbol schema has moved between
     # QGIS releases more than the rest of the QML: if a layer refuses to
     # open, set this to false and the 2D style and temporal settings are
@@ -356,25 +335,30 @@ def _migrate_renamed_keys(user):
 # a warning, so an existing job config still runs instead of silently
 # producing less than it asks for.
 _REMOVED_KEYS = {
-    "surfaces": ("write_topview_raster", "write_topview_netcdf",
-                 "write_walls_gpkg", "wall_lines"),
-    "canopy": ("write_lai", "write_canopy_height", "lad_threshold"),
+    "surfaces": dict.fromkeys(("write_topview_raster", "write_topview_netcdf",
+                               "write_walls_gpkg", "wall_lines"), "0.19.0"),
+    "canopy": dict.fromkeys(("write_lai", "write_canopy_height",
+                             "lad_threshold"), "0.19.0"),
+    # The wind GeoPackage (points / 3D arrows above the surface).
+    "wind": dict.fromkeys(("file_to", "heights_agl", "stride",
+                           "write_lines_3d", "arrow_scale", "include_w"),
+                          "0.29.0"),
 }
 
 
 def _drop_removed_keys(user):
-    """Warn about and discard keys for outputs removed in 0.19.0."""
+    """Warn about and discard keys for outputs that were removed."""
     for section, keys in _REMOVED_KEYS.items():
         block = user.get(section)
         if not isinstance(block, dict):
             continue
-        for key in keys:
+        for key, version in keys.items():
             if key not in block:
                 continue
             if block.pop(key):
-                warning("[config] {}.{} was removed in 0.19.0 and is "
+                warning("[config] {}.{} was removed in {} and is "
                         "ignored.",
-                        section, key)
+                        section, key, version)
 
 
 def _deep_merge(base, override):
@@ -671,15 +655,9 @@ class Config:
             if not c["wind"]["file_from"]:
                 raise ConfigError("wind.file_from is required when "
                                   "wind.enabled: true.")
-            if not (c["wind"]["file_to"] or c["wind"]["grid_to"]):
-                raise ConfigError("wind: set file_to (GeoPackage), grid_to "
-                                  "(NetCDF) or both when wind.enabled: "
-                                  "true.")
-            if c["wind"]["file_to"] and (
-                    not isinstance(c["wind"]["heights_agl"], (list, tuple))
-                    or not c["wind"]["heights_agl"]):
-                raise ConfigError("wind.heights_agl must list at least one "
-                                  "height.")
+            if not c["wind"]["grid_to"]:
+                raise ConfigError("wind: set grid_to (the NetCDF pattern) "
+                                  "when wind.enabled: true.")
             gh = c["wind"]["grid_heights"]
             if c["wind"]["grid_to"] and gh is not None:
                 # None: every PALM level of the voxel range.
@@ -697,11 +675,10 @@ class Config:
                 if len(set(float(h) for h in gh)) != len(gh):
                     raise ConfigError("wind.grid_heights lists a height "
                                       "more than once.")
-            for key in ("stride", "grid_stride"):
-                v = c["wind"][key]
-                if not isinstance(v, int) or isinstance(v, bool) or v < 1:
-                    raise ConfigError(f"wind.{key} must be a whole number "
-                                      f"of at least 1, got {v!r}.")
+            v = c["wind"]["grid_stride"]
+            if not isinstance(v, int) or isinstance(v, bool) or v < 1:
+                raise ConfigError(f"wind.grid_stride must be a whole number "
+                                  f"of at least 1, got {v!r}.")
         for key, val in (("project.overwrite", c["project"]["overwrite"]),
                          ("celsius", c["celsius"])):
             if not isinstance(val, bool):

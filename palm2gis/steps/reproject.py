@@ -5,7 +5,7 @@ scene in another CRS - a global scene in WGS 84, typically - needs layers
 whose files are in that CRS, not merely displayable in it. Two kinds of
 product need two different treatments:
 
-  * Vector layers (surfaces, wind points and 3D arrows) are transformed
+  * Vector layers (surfaces) are transformed
     EXACTLY: every vertex goes through pyproj, z is left untouched.
 
   * Gridded netCDF (voxel, wind, canopy) cannot be: the PALM grid is not

@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.29.0
+
+**Wind GeoPackage removed; wind netCDFs in one folder** *(changes the wind
+output)*
+
+- The wind GeoPackage (`wind.gpkg`: points at heights above the surface
+  and the optional `wind_3d` arrows) is gone. The flow / vector-field
+  renderer draws its own arrows and streamlines from the netCDF, which
+  is now the only wind output. Configs that still set `wind.gpkg` or
+  `wind.heights_above_surface` (legacy layout: `file_to`, `heights_agl`,
+  `stride`, `write_lines_3d`, `arrow_scale`, `include_w`) still run; the
+  settings are ignored with a note.
+- The per-height netCDFs go into **one folder** named after
+  `wind.netcdf.file` without its extension: `{name}_wind.nc` writes
+  `{name}_wind/{name}_wind_z<height>m.nc` instead of dozens of files
+  loose in the output directory. With `{z}` in the name the placeholder
+  is dropped from the folder name (`{name}_wind_{z}m.nc` ->
+  `{name}_wind/`).
+
 ## 0.28.1
 
 **Wind netCDF: NoData is NaN** *(fixes the ArcGIS flow renderer)*

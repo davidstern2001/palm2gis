@@ -144,19 +144,15 @@ surfaces:
 
 
 # ---------------------------------------------------------------------
-# 7. WIND   gridded at absolute heights, points above the surface
-#           (reads data_3d)
+# 7. WIND   gridded at absolute heights (reads data_3d)
 # ---------------------------------------------------------------------
 # dir_met is the direction the wind blows FROM, clockwise from north.
 wind:
     #enabled: true
-    # GeoPackage only: metres above the surface below - the same reference
-    # as region.height_above_surface, so these follow terrain AND rooftops.
-    heights_above_surface: [2.0]
-
     netcdf:                      # ONE FILE PER HEIGHT: (time, z, y, x) with
         file: '{name}_wind.nc'   # u, v, w, speed, dir_met; written as
-                                 # {name}_wind_z<height>m.nc ({z} in the
+                                 # {name}_wind/{name}_wind_z<height>m.nc,
+                                 # all heights in one folder ({z} in the
                                  # name places the height yourself).
                                  # ArcGIS Pro: Add Multidimensional Raster
                                  # Layer -> Vector Field.
@@ -168,12 +164,6 @@ wind:
                                  # interpolated linearly, NoData where
                                  # either level is terrain or building
         #every_nth_column: 1
-    gpkg:                        # arrow points (+ optional 3D lines)
-        file: null
-        #every_nth_column: 1
-        #arrows_3d: false        # extra LineStringZ layer at true height
-        #arrow_length_per_ms: 2.0   # metres of arrow per m/s
-        #tilt_with_w: false      # tilt 3D arrows with vertical velocity
 
 
 # ---------------------------------------------------------------------

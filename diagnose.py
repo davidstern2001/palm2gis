@@ -59,7 +59,7 @@ def report_config(cfg):
         s = cfg[st]
         if s["enabled"]:
             print(f"  {st:<12} from {s['file_from']}")
-            for k in ("scalars", "variables", "heights_agl", "stride",
+            for k in ("scalars", "variables", "grid_heights", "grid_stride",
                       "drop_k0"):
                 if k in s:
                     print(f"               {k}: {s[k]}")
@@ -185,17 +185,6 @@ def report_outputs(cfg):
             for c in g.columns:
                 if (c != "geometry"
                         and gpd.pd.api.types.is_numeric_dtype(g[c])):
-                    stat(c, g[c].values)
-
-    if cfg["wind"]["enabled"] and cfg["wind"]["file_to"]:
-        p = cfg.out_path(cfg["wind"]["file_to"])
-        checked.append(p)
-        if p.exists():
-            g = gpd.read_file(p, layer="wind")
-            print(f"\n  {p.name}: {len(g)} rows, crs {g.crs.to_epsg()}")
-            print(f"    bounds {tuple(round(v, 1) for v in g.total_bounds)}")
-            for c in ("u", "v", "speed", "dir_met", "height_agl"):
-                if c in g:
                     stat(c, g[c].values)
 
     missing = [p for p in checked if not p.exists()]

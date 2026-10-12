@@ -97,7 +97,7 @@ def _graduated_renderer(attr, vmin, vmax, n=5, geom="polygon"):
 def _renderer_3d(geom="polygon", attr=None, vmin=0.0, vmax=1.0):
     """A <layer3DRenderer> block clamping geometry to ABSOLUTE height.
 
-    The wall polygons and the wind arrows already carry true Z, so the
+    The wall polygons already carry true Z, so the
     3D symbol only has to stop QGIS draping them on the terrain
     (alt-clamping="absolute", alt-binding="vertex"). Without this a scene
     flattens every wall onto the ground.

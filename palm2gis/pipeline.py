@@ -8,8 +8,8 @@ Stages:
               Voxel Layer (destaggered u/v/w + scalars, terrain as NoData)
     surfaces  SURFACE_DATA_NETCDF* -> every ground/roof/wall element as
               time-enabled PolygonZ (GeoPackage, MultiPatch, File GDB)
-    wind      DATA_3D_NETCDF* -> wind at heights above the local surface:
-              gridded NetCDF and/or GeoPackage arrows
+    wind      DATA_3D_NETCDF* -> gridded NetCDF per absolute height,
+              all heights in one folder
     canopy    static driver LAD -> voxel NetCDF on absolute heights
 
 The static driver is read first in every run - it provides the grid, the
@@ -71,7 +71,7 @@ def stage_outputs(cfg, stage):
         return out
     if stage == "wind":
         wd = cfg["wind"]
-        out = [cfg.out_path(wd["file_to"])] if wd["file_to"] else []
+        out = []
         # Without an explicit list the heights are the voxel's levels,
         # known only once the 3D file is read, so they are not listed.
         if wd["grid_to"] and wd["grid_heights"]:

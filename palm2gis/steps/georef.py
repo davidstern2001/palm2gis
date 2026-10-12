@@ -480,7 +480,7 @@ def process_static_driver(cfg):
                 # Static drivers that describe buildings only in 3D
                 # (building_id / building_surface_level) leave buildings_2d
                 # entirely at its fill value. The local surface is then bare
-                # terrain, so heights_agl reference the ground even on roofs.
+                # terrain, so heights above ground reference it even on roofs.
                 warning("[static] buildings_2d is empty in the cut - "
                         "heights above ground reference bare TERRAIN, not "
                         "rooftops.")

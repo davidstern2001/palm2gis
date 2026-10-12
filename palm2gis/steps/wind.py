@@ -1,31 +1,25 @@
-"""3D output -> wind layers: points / 3D arrows (GeoPackage) at heights
-above the local surface, and gridded netCDF at ABSOLUTE heights.
+"""3D output -> gridded wind netCDF at ABSOLUTE heights, for ArcGIS Pro's
+flow / vector-field renderers.
 
 No paraview_vis counterpart - this replaces the ParaView Glyph/Calculator
-workflow (make_vector(u,v,w) + Slice + Glyph) with a GIS-native product:
-a point per grid column (optionally thinned by wind.stride) at one or more
-heights ABOVE THE LOCAL SURFACE (terrain + buildings), carrying u, v,
-speed and meteorological direction per timestep. In ArcGIS Pro / QGIS,
-symbolise with arrow markers rotated by `dir_met` (geographic rotation)
-and sized/coloured by `speed`; the `time` field drives the time slider.
-
-Height-above-ground sampling follows terrain and rooftops, which is what
-pedestrian-comfort maps actually need (a fixed-z ParaView slice cuts
-through hillsides and buildings instead).
+workflow (make_vector(u,v,w) + Slice + Glyph): one netCDF per height above
+sea level, (time, z, y, x) with u, v, w, speed and meteorological
+direction, all collected in one folder. The renderer draws its own
+streamlines or arrows from u / v (or speed / dir_met) and the time slider
+steps through the records.
 """
+
+import re
+from pathlib import Path
 
 import numpy as np
 from netCDF4 import Dataset
 
-import geopandas as gpd
-from shapely.geometry import LineString, Point
-
-from ..descriptions import long_name, write_gpkg_descriptions
+from ..descriptions import long_name
 from ..log import debug, get_logger, info, warning
 from .georef import (check_product, check_raw_input, require_variables,
                      resolve_z_range, select_times)
 from .voxel import destagger, write_crs_var
-from .qgis_style import (embed_gpkg_style, vector_qml, write_sidecar)
 
 log = get_logger()
 
@@ -33,33 +27,30 @@ log = get_logger()
 # ------------------------------
 # 1. GRIDDED NETCDF PER ABSOLUTE HEIGHT (ARCGIS FLOW RENDERER)
 # ------------------------------
-def _warn_above_top(inside, z):
-    """Say how many samples fell above the file's top level (-> NoData).
-
-    A vertically cut input (palm_postproc splitz) or a tall building with
-    a large height above it puts surface + h above the last level. The
-    index used to be clipped to that last level, so those samples carried
-    wind from a different height under the requested label.
-    """
-    for h, ok in inside.items():
-        n_out = int((~ok).sum())
-        if n_out:
-            warning("[wind] {} of {} columns: {:g} m AGL is above the top "
-                    "level ({:g} m) - NoData.", n_out, ok.size, h,
-                    float(z[-1]))
-
+def level_dir(pattern):
+    """Folder that collects the per-height files: the pattern's own name
+    without the extension and the {z} placeholder ('x_wind.nc' ->
+    'x_wind/', 'x_wind_{z}m.nc' -> 'x_wind/'), next to where the pattern
+    points."""
+    p = Path(pattern)
+    stem = p.name[:-len(p.suffix)] if p.suffix else p.name
+    stem = re.sub(r"[_\-. ]*z?\{z\}m?", "", stem).strip("_-. ") or "wind"
+    return p.parent / stem
 
 
 def level_path(pattern, z_abs):
-    """Output file for one absolute height: {z} in the pattern is replaced
-    by the height (e.g. 200, 200.5), otherwise `_z<height>m` goes before
-    the extension."""
+    """Output file for one absolute height, inside level_dir(pattern): {z}
+    in the pattern is replaced by the height (e.g. 200, 200.5), otherwise
+    `_z<height>m` goes before the extension."""
     tag = "{:g}".format(round(float(z_abs), 3))
-    if "{z}" in pattern:
-        return pattern.replace("{z}", tag)
-    stem, dot, ext = pattern.rpartition(".")
-    return "{}_z{}m.{}".format(stem, tag, ext) if dot else \
-        "{}_z{}m".format(pattern, tag)
+    name = Path(pattern).name
+    if "{z}" in name:
+        name = name.replace("{z}", tag)
+    else:
+        stem, dot, ext = name.rpartition(".")
+        name = ("{}_z{}m.{}".format(stem, tag, ext) if dot else
+                "{}_z{}m".format(name, tag))
+    return level_dir(pattern) / name
 
 
 def _bracket(z_rel, target):
@@ -237,18 +228,15 @@ def _wind_levels(cfg, grid, nc, its, times, z_rel):
 # ------------------------------
 def stage_wind(cfg, grid):
     wd = cfg["wind"]
-    file_to = cfg.out_path(wd["file_to"]) if wd["file_to"] else None
-    want_gpkg = file_to is not None and cfg.prepare_output(file_to, "wind")
     # One netCDF per absolute height; each is checked for existing output
     # on its own inside _wind_levels.
-    want_grid = bool(wd["grid_to"])
-    if not (want_gpkg or want_grid):
+    if not wd["grid_to"]:
         return
 
     with Dataset(cfg.resolve(wd["file_from"]), "r") as nc:
         check_product(nc, "wind", wd["file_from"])
         check_raw_input(nc, grid, "wind", wd["file_from"])
-        its, times = select_times(cfg, nc, "wind", grid, cfg["wind"]["file_from"])
+        its, times = select_times(cfg, nc, "wind", grid, wd["file_from"])
 
         require_variables(
             nc, ["u", "v"], "wind", wd["file_from"],
@@ -256,148 +244,4 @@ def stage_wind(cfg, grid):
                  "outputs only the grouped u/v/w file has "
                  "(steps.splitvar.group_vars).")
         z = np.asarray(nc.variables["zu_3d"][:], dtype="f8")
-        nz = z.size
-        if want_grid:
-            _wind_levels(cfg, grid, nc, its, times, z)
-        if not want_gpkg:
-            return
-        stride = int(wd["stride"])
-        heights = [float(h) for h in wd["heights_agl"]]
-
-        # thinned column selection (indices into the cut subdomain)
-        jj = np.arange(0, grid.nymax - grid.ny0, stride)
-        ii = np.arange(0, grid.nxmax - grid.nx0, stride)
-        jg, ig = np.meshgrid(jj, ii, indexing="ij")
-        jf, if_ = jg.ravel(), ig.ravel()
-        debug("[wind] {} columns (stride {}), heights AGL: {} m",
-              len(jf), stride, ", ".join(str(h) for h in heights))
-
-
-        lines_3d = bool(wd["write_lines_3d"])
-        include_w = bool(wd["include_w"])
-        scale = float(wd["arrow_scale"])
-
-        # per column: k index of the first level >= local surface + h_agl
-        k_idx = {}
-        z_abs = {}
-        inside = {}
-        for h in heights:
-            k = np.searchsorted(z, grid.elev[jf, if_] + h)
-            inside[h] = k < nz
-            k_idx[h] = np.clip(k, 0, nz - 1)
-            # The true height of the sample, for the 3D geometry. The 2D
-            # point layer carried this only as the `height_agl` attribute,
-            # so every level collapsed onto the ground in a 3D scene and
-            # the 2 m and 10 m samples sat exactly on top of each other.
-            # grid.elev is terrain + buildings ABOVE THE DOMAIN BASE, so
-            # the sample height needs origin_z to become a real elevation.
-            # Without it the 3D arrows sat origin_z metres underground.
-            z_abs[h] = grid.abs_z(grid.elev[jf, if_] + h)
-        _warn_above_top(inside, z)
-
-        # Geometry is built in PALM's CRS and transformed as a whole into
-        # the output CRS (exact, z untouched), so the 3D arrows keep their
-        # metre-based length and point where the wind actually blows.
-        reproj = grid.reproj
-        x_abs = grid.abs_x(grid.x_stat)
-        y_abs = grid.abs_y(grid.y_stat)
-        pts = reproj.geoms([Point(x_abs[i], y_abs[j])
-                            for j, i in zip(jf, if_)])
-        dts = grid.times_to_datetime(times)
-        dts_tz = grid.times_to_datetime(times, tz_aware=True)
-
-        # Written one timestep at a time (first with mode="w", the rest
-        # appended) so peak memory is a single timestep instead of
-        # points x heights x timesteps held at once.
-        if file_to.exists():
-            file_to.unlink()      # never append onto a previous run
-
-        n_out = 0
-        for n, it in enumerate(its):
-            debug("[wind] time {} ({:.0f} s)", it, times[it])
-            u3 = destagger(nc, "u", it, 0, nz, grid.ny0, grid.nymax,
-                           grid.nx0, grid.nxmax)
-            v3 = destagger(nc, "v", it, 0, nz, grid.ny0, grid.nymax,
-                           grid.nx0, grid.nxmax)
-            w3 = (destagger(nc, "w", it, 0, nz, grid.ny0, grid.nymax,
-                            grid.nx0, grid.nxmax)
-                  if (include_w and lines_3d) else None)
-            parts = []
-            parts3 = []
-            for h in heights:
-                k = k_idx[h]
-                u_g = np.where(inside[h], u3[k, jf, if_], np.nan)
-                v_g = np.where(inside[h], v3[k, jf, if_], np.nan)
-                # Attributes in the output CRS's east/north; the arrow
-                # geometry below is built from the grid components and
-                # transformed, which gives the same direction.
-                u, v = reproj.rotate_at(u_g, v_g, jf, if_)
-                speed = np.hypot(u, v)
-                # `speed` and `dir_met` stay HORIZONTAL even when the 3D
-                # geometry tilts with w, so the two layers remain directly
-                # comparable and dir_met keeps its meteorological meaning.
-                dir_met = (270.0 - np.degrees(np.arctan2(v, u))) % 360.0
-                attrs = {"time": [dts_tz[it]] * len(pts),
-                         "rec": it,
-                         "height_agl": h,
-                         "u": u.astype(np.float32),
-                         "v": v.astype(np.float32),
-                         "speed": speed.astype(np.float32),
-                         "dir_met": dir_met.astype(np.float32)}
-                parts.append(gpd.GeoDataFrame(dict(attrs), geometry=pts,
-                                              crs=reproj.crs))
-                if not lines_3d:
-                    continue
-                w = (np.where(inside[h], w3[k, jf, if_], np.nan)
-                     if w3 is not None else np.zeros_like(u))
-                zb = z_abs[h]
-                segs = [LineString([(x0, y0, z0),
-                                    (x0 + ux * scale, y0 + vy * scale,
-                                     z0 + wz * scale)])
-                        for x0, y0, z0, ux, vy, wz
-                        in zip(x_abs[if_], y_abs[jf], zb,
-                               np.nan_to_num(u_g), np.nan_to_num(v_g),
-                               np.nan_to_num(w))]
-                segs = reproj.geoms(segs)
-                a3 = dict(attrs)
-                a3["z"] = zb.astype(np.float32)
-                if w3 is not None:
-                    a3["w"] = w.astype(np.float32)
-                parts3.append(gpd.GeoDataFrame(a3, geometry=segs,
-                                               crs=reproj.crs))
-            frame = (parts[0] if len(parts) == 1
-                     else gpd.pd.concat(parts, ignore_index=True))
-            frame.to_file(file_to, layer="wind", driver="GPKG",
-                          mode="w" if n == 0 else "a")
-            n_out += len(frame)
-
-            if lines_3d:
-                f3 = (parts3[0] if len(parts3) == 1
-                      else gpd.pd.concat(parts3, ignore_index=True))
-                # Always appended: the point layer above has already
-                # created (or replaced) the file for this timestep.
-                f3.to_file(file_to, layer="wind_3d", driver="GPKG",
-                           mode="a")
-
-        write_gpkg_descriptions(file_to, "wind")
-        if lines_3d:
-            write_gpkg_descriptions(file_to, "wind_3d")
-
-        if cfg["qgis_styles"]:
-            from .surfaces import _median_step
-            step = _median_step(dts, its)
-            qml = vector_qml("time", step)
-            write_sidecar(file_to, qml)
-            embed_gpkg_style(file_to, "wind", qml)
-            if lines_3d:
-                embed_gpkg_style(file_to, "wind_3d",
-                                 vector_qml("time", step, geom="line",
-                                            clamp_absolute=True))
-        info("[wind] wrote {}: {} pts x {} heights x {} times "
-             "(stride {})", cfg.disp(file_to), len(pts), len(heights),
-             len(its), stride)
-        if lines_3d:
-            info("[wind] wrote {}: layer 'wind_3d' with {} 3D arrows "
-                 "({} m per m/s, {})", cfg.disp(file_to),
-                 len(pts) * len(heights) * len(its), scale,
-                 "u, v, w" if include_w else "u, v (horizontal)")
+        _wind_levels(cfg, grid, nc, its, times, z)

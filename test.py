@@ -233,9 +233,6 @@ canopy:
 wind:
   enabled: true
   file_from: test_3d
-  file_to: test_wind.gpkg
-  heights_agl: [2.0, 10.0]
-  stride: 2
   grid_to: test_wind.nc
   grid_heights: [180.0, 183.0]
 """)
@@ -244,6 +241,17 @@ wind:
 # ------------------------------
 # 4. OUTPUT VERIFICATION
 # ------------------------------
+def _output_names(out):
+    """Products in an output directory: top-level files, plus the wind
+    netCDFs inside their folder as 'folder/file'."""
+    names = {p.name for p in out.iterdir()
+             if p.suffix in (".nc", ".gpkg", ".gdb", ".shp")}
+    for d in out.iterdir():
+        if d.is_dir() and d.suffix == "":
+            names |= {f"{d.name}/{f.name}" for f in d.glob("*.nc")}
+    return names
+
+
 def check(cond, msg, failures):
     tag = "ok  " if cond else "FAIL"
     print(f"  [{tag}] {msg}")
@@ -435,7 +443,7 @@ def verify_outputs(out):
     import sqlite3
     import xml.dom.minidom as minidom
 
-    vqml = out / "test_wind.qml"
+    vqml = out / "test_surfaces.qml"
     check(vqml.exists(), "qgis: vector style sidecar written", failures)
     if vqml.exists():
         t = minidom.parse(str(vqml)).getElementsByTagName("temporal")[0]
@@ -443,11 +451,11 @@ def verify_outputs(out):
               and t.getAttribute("startField") == "time",
               "qgis: vector QML reads time from the time field", failures)
 
-    con = sqlite3.connect(out / "test_wind.gpkg")
+    con = sqlite3.connect(out / "test_surfaces.gpkg")
     rows = con.execute("SELECT f_table_name, useAsDefault FROM "
                        "layer_styles").fetchall()
     con.close()
-    check(rows and rows[0][0] == "wind" and rows[0][1] == 1,
+    check(rows and rows[0][0] == "surfaces" and rows[0][1] == 1,
           "qgis: style embedded in the GeoPackage as default", failures)
 
     # -- p3d namelist parsing ----------------------------------------------
@@ -512,18 +520,18 @@ def verify_outputs(out):
               f"absolute levels", failures)
 
     # -- wind --------------------------------------------------------------
-    wind = gpd.read_file(out / "test_wind.gpkg", layer="wind")
-    check(set(wind["height_agl"].unique()) == {2.0, 10.0},
-          "wind: both AGL heights present", failures)
-    check(wind.groupby("rec").size().nunique() == 1
-          and wind["rec"].nunique() == NT,
-          f"wind: {NT} timesteps appended cleanly, equal rows each",
-          failures)
+    check(not (out / "test_wind.gpkg").exists()
+          and not list(out.glob("test_wind_z*.nc")),
+          "wind: no GeoPackage, no per-height files loose in the output "
+          "directory", failures)
+    with Dataset(out / "test_wind" / "test_wind_z183m.nc") as nc:
+        dr = np.ma.filled(nc["dir_met"][:], np.nan)
+        n_t = nc["time"].size
     # u = 2, v = 1 -> meteorological direction 270 - atan2(1, 2) = 243.4
-    dmean = wind[wind.height_agl == 10.0].dir_met.mean()
-    check(abs(dmean - 243.4) < 3.0,
-          f"wind: mean direction {dmean:.1f} deg close to 243.4",
-          failures)
+    dmean = float(np.nanmean(dr))
+    check(n_t == NT and abs(dmean - 243.4) < 3.0,
+          f"wind: {NT} records, mean direction {dmean:.1f} deg close to "
+          f"243.4", failures)
 
     return failures
 
@@ -535,18 +543,24 @@ def verify_state(tmp, pipeline_main):
     """Editing a setting must invalidate the outputs it affects, and only
     those. Skipping on filename alone used to keep stale files silently."""
     import time as _time
+    from netCDF4 import Dataset
     out = tmp / "out"
     cfgfile = tmp / "config.yaml"
     failures = []
 
-    wind = out / "test_wind.gpkg"
+    wind = out / "test_wind" / "test_wind_z180m.nc"
     voxel = out / "test_voxel.nc"
+
+    def nx(path):
+        with Dataset(path) as nc:
+            return nc.dimensions["x"].size
 
     # settle, so mtime comparisons are meaningful
     pipeline_main(["-c", str(cfgfile)])
     _time.sleep(0.01)
     s_wind = wind.stat().st_mtime_ns
     s_voxel = voxel.stat().st_mtime_ns
+    nx_full = nx(wind)
 
     check((out / ".palm2gis_state.json").is_file(),
           "state: sidecar written to the output directory", failures)
@@ -558,22 +572,20 @@ def verify_state(tmp, pipeline_main):
 
     # change ONLY a wind setting
     text = cfgfile.read_text()
-    assert "heights_agl: [2.0, 10.0]" in text, "test fixture changed"
-    cfgfile.write_text(text.replace("heights_agl: [2.0, 10.0]",
-                                    "heights_agl: [2.0, 10.0, 20.0]"))
+    assert "grid_heights: [180.0, 183.0]\n" in text, "test fixture changed"
+    cfgfile.write_text(text.replace("grid_heights: [180.0, 183.0]\n",
+                                    "grid_heights: [180.0, 183.0]\n"
+                                    "  grid_stride: 2\n"))
     pipeline_main(["-c", str(cfgfile)])
     check(wind.stat().st_mtime_ns != s_wind,
-          "state: editing wind.heights rewrites the wind output", failures)
+          "state: editing a wind setting rewrites the wind output", failures)
     check(voxel.stat().st_mtime_ns == s_voxel,
           "state: a wind-only edit leaves the voxel output alone", failures)
-
-    import geopandas as gpd
-    w = gpd.read_file(wind, layer="wind")
-    check(set(w["height_agl"].unique()) == {2.0, 10.0, 20.0},
+    check(nx(wind) < nx_full,
           "state: the rewritten output reflects the NEW config", failures)
 
     # --ignore-state restores the old existence-only behaviour
-    cfgfile.write_text(text)                       # back to two heights
+    cfgfile.write_text(text)                       # back to full resolution
     s_wind2 = wind.stat().st_mtime_ns
     pipeline_main(["-c", str(cfgfile), "--ignore-state"])
     check(wind.stat().st_mtime_ns == s_wind2,
@@ -581,8 +593,7 @@ def verify_state(tmp, pipeline_main):
 
     # and without it, the revert is picked up again
     pipeline_main(["-c", str(cfgfile)])
-    w = gpd.read_file(wind, layer="wind")
-    check(set(w["height_agl"].unique()) == {2.0, 10.0},
+    check(nx(wind) == nx_full,
           "state: reverting the config rewrites the output back", failures)
     return failures
 
@@ -598,7 +609,7 @@ def verify_overwrite(tmp, pipeline_main):
     failures = []
 
     voxel = out / "test_voxel.nc"
-    wind = out / "test_wind.gpkg"
+    wind = out / "test_wind" / "test_wind_z180m.nc"
     stamp_voxel = voxel.stat().st_mtime_ns
     stamp_wind = wind.stat().st_mtime_ns
 
@@ -624,9 +635,10 @@ def verify_overwrite(tmp, pipeline_main):
 
     # GeoPackage layers must be replaced, not appended to
     import geopandas as gpd
-    n_rows = len(gpd.read_file(wind, layer="wind"))
+    sgp = out / "test_surfaces.gpkg"
+    n_rows = len(gpd.read_file(sgp, layer="surfaces"))
     pipeline_main(["-c", cfgfile, "--overwrite"])
-    check(len(gpd.read_file(wind, layer="wind")) == n_rows,
+    check(len(gpd.read_file(sgp, layer="surfaces")) == n_rows,
           "overwrite: GeoPackage is replaced, not appended to", failures)
 
     return failures
@@ -773,11 +785,12 @@ def verify_regressions(tmp, out, pipeline_main):
         vz = _np.asarray(vx["z"][:])
         vu = _np.ma.filled(vx["u"][0], _np.nan)
     k180, k182, k184 = (int(_np.argmin(abs(vz - h))) for h in (180, 182, 184))
-    check(sorted(p.name for p in out.glob("test_wind_z*.nc"))
+    check(sorted(p.name for p in (out / "test_wind").glob("*.nc"))
           == ["test_wind_z180m.nc", "test_wind_z183m.nc"],
-          "wind grid: one file per absolute height, named by the height",
+          "wind grid: one file per absolute height, named by the height, "
+          "all in one folder",
           failures)
-    with Dataset(out / "test_wind_z180m.nc") as nc:
+    with Dataset(out / "test_wind" / "test_wind_z180m.nc") as nc:
         check(nc["u"].dimensions == ("time", "z", "y", "x")
               and float(nc["z"][0]) == 180.0
               and nc["z"].standard_name == "height_above_mean_sea_level"
@@ -806,7 +819,7 @@ def verify_regressions(tmp, out, pipeline_main):
                                atol=1e-5),
               "wind grid: a height on a PALM level equals the voxel there "
               "(values and NoData)", failures)
-    with Dataset(out / "test_wind_z183m.nc") as nc:
+    with Dataset(out / "test_wind" / "test_wind_z183m.nc") as nc:
         g = _np.ma.filled(nc["u"][0, 0], _np.nan)
         ref = 0.5 * (vu[k182] + vu[k184])      # NaN where either is NoData
         check(float(nc["z"][0]) == 183.0
@@ -829,14 +842,12 @@ def verify_regressions(tmp, out, pipeline_main):
         .replace("bounds:\n  zmax: 10",
                  "bounds:\n  zmax: 10\n  x0: 6\n  xmax: 30\n"
                  "  y0: 4\n  ymax: 32")
-        .replace("file_to: test_wind.gpkg",
-                 "file_to: test_wind_cut.gpkg")
         .replace("grid_to: test_wind.nc", "grid_to: test_wind_cut.nc"))
     rc = pipeline_main(["-c", str(cfg_cut), "--stages", "wind",
                         "--overwrite"])
     check(rc == 0, "wind grid: survives a subdomain cut", failures)
-    with Dataset(out / "test_wind_z180m.nc") as full, \
-            Dataset(out / "test_wind_cut_z180m.nc") as cut:
+    with Dataset(out / "test_wind" / "test_wind_z180m.nc") as full, \
+            Dataset(out / "test_wind_cut" / "test_wind_cut_z180m.nc") as cut:
         fx, fy = _np.asarray(full["x"][:]), _np.asarray(full["y"][:])
         cx, cy = _np.asarray(cut["x"][:]), _np.asarray(cut["y"][:])
         i0 = int(_np.argmin(abs(fx - cx[0])))
@@ -960,13 +971,10 @@ def verify_descriptions(out):
           "descriptions: surfaces GeoPackage fields carry descriptions",
           failures)
 
-    con = sqlite3.connect(str(out / "test_wind.gpkg"))
-    n = con.execute("SELECT count(*) FROM gpkg_data_columns WHERE "
-                    "table_name = 'wind' AND column_name = 'dir_met'"
-                    ).fetchone()[0]
-    con.close()
-    check(n == 1, "descriptions: wind GeoPackage fields carry descriptions",
-          failures)
+    with Dataset(out / "test_wind" / "test_wind_z180m.nc") as nc:
+        check(nc["dir_met"].long_name == DESCRIPTIONS["dir_met"][1],
+              "descriptions: wind netCDF variables carry descriptions",
+              failures)
 
     try:
         import pyarrow  # noqa: F401
@@ -1134,13 +1142,10 @@ surfaces:
     all_elements_multipatch:
         file: '{{name}}_surfaces.shp'
 wind:
-    heights_above_surface: [2.0, 10.0]
     netcdf:
         file: '{{name}}_wind.nc'
         heights: [180, 183]
-    gpkg:
-        file: '{{name}}_wind.gpkg'
-        every_nth_column: 2
+        every_nth_column: 1
 canopy:
     lad_netcdf:
         file: '{{name}}_lad_3d.nc'
@@ -1161,19 +1166,18 @@ advanced:
             ("surfaces", ("file_from", "variables", "derive_t_surface",
                           "write_all_elements_gpkg", "write_fgdb",
                           "write_multipatch")),
-            ("wind", ("file_from", "file_to", "grid_to", "grid_heights",
-                      "heights_agl", "stride")),
+            ("wind", ("file_from", "grid_to", "grid_heights",
+                      "grid_stride")),
             ("canopy", ("write_volume",))))
     check(same, "layout: new config translates to the legacy settings",
           failures)
 
     rc = pipeline_main(["-c", str(new), "--overwrite"])
     out = tmp / "out_new"
-    names = {p.name for p in out.iterdir()
-             if p.suffix in (".nc", ".gpkg", ".gdb", ".shp")}
+    names = _output_names(out)
     want = {"test_voxel.nc", "test_surfaces.gpkg", "test_surfaces.gdb",
-            "test_surfaces.shp", "test_wind_z180m.nc", "test_wind_z183m.nc",
-            "test_wind.gpkg", "test_lad_3d.nc"}
+            "test_surfaces.shp", "test_wind/test_wind_z180m.nc",
+            "test_wind/test_wind_z183m.nc", "test_lad_3d.nc"}
     check(rc == 0 and names == want,
           f"layout: run writes exactly the named files ({sorted(names)})",
           failures)
@@ -1201,22 +1205,37 @@ advanced:
     check(len(a) == len(b) and list(a.columns) == list(b.columns),
           "layout: same surface layer as the legacy config", failures)
 
-    # opt-in: only the wind NetCDF, no GeoPackage - legacy validation used
-    # to demand file_to even though the stage handles this case
+    # null files are skipped; a pre-0.29 config that still asks for the
+    # wind GeoPackage runs, with the removed settings ignored
     only = tmp / "config_new_only.yaml"
     only.write_text(new.read_text()
                     .replace("./out_new", "./out_only")
-                    .replace("file: '{name}_wind.gpkg'", "file: null")
+                    .replace("wind:\n", "wind:\n"
+                             "    heights_above_surface: [2.0, 10.0]\n"
+                             "    gpkg:\n"
+                             "        file: '{name}_wind.gpkg'\n"
+                             "        every_nth_column: 2\n")
                     .replace("file: '{name}_surfaces.gdb'", "file: null")
                     .replace("file: '{name}_surfaces.shp'", "file: null"))
     rc = pipeline_main(["-c", str(only), "--stages", "wind", "surfaces"])
-    names = {p.name for p in (tmp / "out_only").iterdir()
-             if p.suffix in (".nc", ".gpkg", ".gdb", ".shp")}
-    check(rc == 0 and names == {"test_wind_z180m.nc", "test_wind_z183m.nc",
+    names = _output_names(tmp / "out_only")
+    check(rc == 0 and names == {"test_wind/test_wind_z180m.nc",
+                                "test_wind/test_wind_z183m.nc",
                                 "test_surfaces.gpkg"},
-          f"layout: null files are skipped, NetCDF-only wind runs "
-          f"({sorted(names)})", failures)
-    with Dataset(tmp / "out_only" / "test_wind_z183m.nc") as nc:
+          f"layout: null files are skipped, wind.gpkg of an old config is "
+          f"ignored ({sorted(names)})", failures)
+    legacy_old = tmp / "config_legacy_gpkg.yaml"
+    legacy_old.write_text(
+        (tmp / "config.yaml").read_text()
+        .replace("grid_to: test_wind.nc",
+                 "grid_to: test_wind.nc\n  file_to: test_wind.gpkg\n"
+                 "  heights_agl: [2.0]\n  write_lines_3d: true"))
+    lc = Config(str(legacy_old))
+    check(not {"file_to", "heights_agl", "write_lines_3d"}
+          & set(lc["wind"].keys()),
+          "config: legacy wind GeoPackage keys load and are dropped",
+          failures)
+    with Dataset(tmp / "out_only" / "test_wind" / "test_wind_z183m.nc") as nc:
         check(nc["u"].dimensions == ("time", "z", "y", "x"),
               "layout: NetCDF-only wind grid is complete", failures)
 
@@ -1356,7 +1375,7 @@ advanced:
                          "        temperature: F", 1),
             "must be K or C", "layout: an unknown temperature scale is "
                               "rejected")
-    rejects(base.replace("every_nth_column: 2", "every_nth_colum: 2"),
+    rejects(base.replace("every_nth_column: 1", "every_nth_colum: 1"),
             "Did you mean 'every_nth_column'",
             "layout: a misspelt key is rejected with a suggestion")
     rejects(base + "bounds:\n    zmax: 10\n", "old config layout",
@@ -1370,14 +1389,13 @@ advanced:
             "into letters")
     rejects(base.replace("canopy:\n", "canopy:\n    enabled: 'false'\n"),
             "true or false", "layout: a quoted boolean is rejected")
-    rejects(base.replace("every_nth_column: 2", "every_nth_column: 0"),
+    rejects(base.replace("every_nth_column: 1", "every_nth_column: 0"),
             "at least 1", "layout: every_nth_column 0 is rejected")
     rejects(base.replace("{name}_surfaces.gdb", "{name}_surfaces"),
             "must end in .gdb", "layout: a wrong output extension is "
                                 "rejected before anything is written")
-    rejects(base.replace("{name}_wind.nc", "{name}_voxel_z{z}.nc")
-            .replace("heights: [180, 183]", "heights: [180]")
-            .replace("{name}_voxel.nc", "{name}_voxel_z180.nc"),
+    rejects(base.replace("heights: [180, 183]", "heights: [180]")
+            .replace("{name}_voxel.nc", "{name}_wind/{name}_wind_z180m.nc"),
             "would both write",
             "config: two outputs on one path are rejected")
     # no wind.netcdf.heights: one file per PALM level of the voxel range,
@@ -1391,7 +1409,7 @@ advanced:
     with Dataset(ad / "test_voxel.nc") as vx:
         vz = [float(z) for z in vx["z"][:]]
         vu0 = _np_thermo.ma.filled(vx["u"][0], _np_thermo.nan)
-    files = sorted(ad.glob("test_wind_z*.nc"))
+    files = sorted((ad / "test_wind").glob("test_wind_z*.nc"))
     zs = []
     for f in files:
         with Dataset(f) as nc:
@@ -1399,7 +1417,7 @@ advanced:
     ok = rc == 0 and sorted(zs) == vz
     if ok:
         k = len(vz) // 2
-        with Dataset(ad / "test_wind_z{:g}m.nc".format(vz[k])) as nc:
+        with Dataset(ad / "test_wind" / "test_wind_z{:g}m.nc".format(vz[k])) as nc:
             g = _np_thermo.ma.filled(nc["u"][0, 0], _np_thermo.nan)
         ok = (_np_thermo.array_equal(_np_thermo.isnan(g),
                                      _np_thermo.isnan(vu0[k]))
@@ -1467,16 +1485,11 @@ advanced:
     # a sample above the file's top level is NoData, not the top value
     high = tmp / "config_high.yaml"
     high.write_text(base.replace("./out_new", "./out_high")
-                    .replace("[2.0, 10.0]", "[2.0, 50.0]")
                     .replace("heights: [180, 183]", "heights: [180, 999]"))
     rc = pipeline_main(["-c", str(high), "--stages", "wind"])
-    check(rc == 0 and (tmp / "out_high" / "test_wind_z180m.nc").exists()
-          and not (tmp / "out_high" / "test_wind_z999m.nc").exists(),
+    check(rc == 0 and (tmp / "out_high" / "test_wind" / "test_wind_z180m.nc").exists()
+          and not (tmp / "out_high" / "test_wind" / "test_wind_z999m.nc").exists(),
           "wind: an absolute height above the file's levels is skipped",
-          failures)
-    pts = gpd.read_file(tmp / "out_high" / "test_wind.gpkg", layer="wind")
-    check(pts[pts.height_agl == 50.0]["u"].isna().all(),
-          "wind: the point layer carries NULL above the top level",
           failures)
     return failures
 
@@ -1500,7 +1513,7 @@ def verify_output_crs(tmp, pipeline_main):
     import geopandas as gpd
     import numpy as np
     from netCDF4 import Dataset
-    from pyproj import Geod, Proj, Transformer
+    from pyproj import Proj, Transformer
 
     failures = []
     cfg = tmp / "config_4326.yaml"
@@ -1527,15 +1540,10 @@ surfaces:
     all_elements_multipatch:
         file: '{{name}}_surfaces.shp'
 wind:
-    heights_above_surface: [2.0, 10.0]
     netcdf:
         file: '{{name}}_wind.nc'
         heights: [180, 183]
         every_nth_column: 2
-    gpkg:
-        file: '{{name}}_wind.gpkg'
-        every_nth_column: 2
-        arrows_3d: true
 canopy:
     lad_netcdf:
         file: '{{name}}_lad_3d.nc'
@@ -1619,28 +1627,19 @@ advanced:
     m = np.isfinite(u) & np.isfinite(v)
     check(m.any(), "output crs: voxel u/v hold data", failures)
 
-    # -- wind: arrows exact, attributes in the same frame ----------------
-    w3 = gpd.read_file(out / "test_wind.gpkg", layer="wind_3d")
-    pts = gpd.read_file(out / "test_wind.gpkg", layer="wind")
-    check(w3.crs.to_epsg() == 4326 and pts.crs.to_epsg() == 4326
-          and w3.geometry.has_z.all() and not pts.geometry.has_z.any(),
-          "output crs: wind points 2D and arrows 3D, both EPSG:4326",
-          failures)
-    g = w3[w3.speed > 0]
-    c = np.array([np.array(ln.coords) for ln in g.geometry])
-    az, _, _ = Geod(ellps="WGS84").inv(c[:, 0, 0], c[:, 0, 1],
-                                       c[:, 1, 0], c[:, 1, 1])
-    d = (90.0 - az) - np.degrees(np.arctan2(g.v, g.u))
-    d = (d + 180.0) % 360.0 - 180.0
-    check(np.max(abs(d)) < 1e-3,
-          f"output crs: arrow bearing matches rotated u/v "
-          f"(max {np.max(abs(d)):.3f} deg)", failures)
-    check(np.allclose(c[:, 0, 2], g.z, atol=1e-3),
-          "output crs: arrow z unchanged (m above sea level)", failures)
-    with Dataset(out / "test_wind_z183m.nc") as nc:
+    # -- wind: netCDF on lat/lon, direction from the rotated u/v ----------
+    with Dataset(out / "test_wind" / "test_wind_z183m.nc") as nc:
         check(nc["u"].dimensions == ("time", "z", "lat", "lon")
               and nc["crs"].EPSG_code == "EPSG:4326",
               "output crs: wind netCDF on lat/lon in EPSG:4326", failures)
+        wu = nc["u"][:].filled(np.nan)
+        wv = nc["v"][:].filled(np.nan)
+        wd = nc["dir_met"][:].filled(np.nan)
+        ok = np.isfinite(wu)
+        dd = (wd - (270.0 - np.degrees(np.arctan2(wv, wu)))) % 360.0
+        dd = np.minimum(dd, 360.0 - dd)
+        check(ok.any() and np.max(dd[ok]) < 1e-3,
+              "output crs: wind dir_met matches the rotated u/v", failures)
 
     # -- surfaces: exact transform, z untouched ---------------------------
     s = gpd.read_file(out / "test_surfaces.gpkg", layer="surfaces")

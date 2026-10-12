@@ -25,13 +25,11 @@ surfaces:
         file: example_surfaces.gpkg
 
 wind:
-    heights_above_surface: [2.0]  # GeoPackage points, metres above the surface
     # Gridded wind for ArcGIS's flow renderer - one netCDF per absolute
-    # height, by default every level of the voxel's range:
-    #netcdf:
-    #    file: example_wind.nc
-    gpkg:
-        file: example_wind.gpkg
+    # height, by default every level of the voxel's range, all in the
+    # folder example_wind/:
+    netcdf:
+        file: example_wind.nc
         every_nth_column: 4
 
 # The rest takes its default: CRS from the static driver, region and time
