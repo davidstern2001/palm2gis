@@ -37,6 +37,7 @@ SCHEMA = {
     "surfaces": {"enabled": None, "variables": None,
                  "all_elements_gpkg": _OUT_FILE,
                  "all_elements_fgdb": _OUT_FILE,
+                 # Removed in 0.30.0, ignored with a note:
                  "all_elements_multipatch": _OUT_FILE},
     "wind": {"enabled": None,
              "netcdf": {"file": None, "heights": None,
@@ -56,7 +57,7 @@ SCHEMA = {
         "basic_state": {"surface_pressure": None, "pt_surface": None},
         "netcdf": {"crs": None, "voxel_drop_k0": None, "resampling": None},
         "qgis": {"styles": None, "styles_3d": None},
-        "shapefile": {"multipatch_split": None},
+        "shapefile": {"multipatch_split": None},   # removed in 0.30.0
         "records": {"skip": None, "count": None, "end": None},
         "time_axis": {"step": None, "start": None},
         "canopy_file_from": None, "stages": None,
@@ -87,8 +88,6 @@ _ADV_GROUPS = {
                "resampling": ("resampling", None)},
     "qgis": {"styles": ("qgis_styles", "qgis_styles"),
              "styles_3d": ("qgis_styles_3d", "qgis_styles_3d")},
-    "shapefile": {"multipatch_split": ("multipatch_split",
-                                       "multipatch_split")},
     "records": {"skip": ("skip_times", "skip_times"),
                 "count": ("n_times", "n_times"),
                 "end": ("time_end", "time_end")},
@@ -194,8 +193,7 @@ def _number(val, where, minimum=None, integer=False):
 # opens nowhere, and GDAL refuses a File Geodatabase without `.gdb` only
 # AFTER the other surface layers have been written.
 _EXTENSIONS = {"netcdf": ".nc", "lad_netcdf": ".nc",
-               "all_elements_gpkg": ".gpkg", "all_elements_fgdb": ".gdb",
-               "all_elements_multipatch": ".shp"}
+               "all_elements_gpkg": ".gpkg", "all_elements_fgdb": ".gdb"}
 
 
 def _set(out, section, key, value):
@@ -447,8 +445,16 @@ def translate(user):
     sf = user.get("surfaces")
     sf_on = _enabled(sf, "surfaces")
     sf_files = {k: _file((sf or {}).get(k), name, f"surfaces.{k}")
-                for k in ("all_elements_gpkg", "all_elements_fgdb",
-                          "all_elements_multipatch")}
+                for k in ("all_elements_gpkg", "all_elements_fgdb")}
+    adv_raw = user.get("advanced") or {}
+    mp_blk = (sf or {}).get("all_elements_multipatch")
+    if ((isinstance(mp_blk, dict) and mp_blk.get("file"))
+            or adv_raw.get("shapefile") is not None
+            or adv_raw.get("multipatch_split") is not None):
+        notes.append("The MultiPatch shapefile (surfaces."
+                     "all_elements_multipatch, advanced.shapefile) was "
+                     "removed in 0.30.0 and is ignored - use "
+                     "all_elements_fgdb for ArcGIS.")
     if sf_on and any(sf_files.values()):
         variables = _names(sf.get("variables"), "surfaces.variables")
         if not variables:
@@ -476,14 +482,7 @@ def translate(user):
             "all_elements_to": sf_files["all_elements_gpkg"],
             "write_fgdb": bool(sf_files["all_elements_fgdb"]),
             "fgdb_to": sf_files["all_elements_fgdb"],
-            "write_multipatch": bool(sf_files["all_elements_multipatch"]),
-            "multipatch_to": sf_files["all_elements_multipatch"],
         }
-        _set(out, "surfaces", "multipatch_split",
-             _number(adv.get("multipatch_split"),
-                     adv_where.get("multipatch_split",
-                                   "advanced.shapefile.multipatch_split"),
-                     1, integer=True))
     else:
         out["surfaces"] = {"enabled": False}
         if sf_on:

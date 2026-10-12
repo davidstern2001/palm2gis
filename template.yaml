@@ -139,8 +139,6 @@ surfaces:
         file: '{name}_surfaces.gpkg'
     all_elements_fgdb:           # File Geodatabase; ArcGIS native, keeps
         file: null               # datetimes and long field names
-    all_elements_multipatch:     # ESRI MultiPatch .shp; ArcGIS 3D Object
-        file: null               # scene layers (10-character field names)
 
 
 # ---------------------------------------------------------------------
@@ -238,9 +236,6 @@ canopy:
     #qgis:
         #styles: true            # write .qml styles next to the layers
         #styles_3d: true         # add a 3D renderer to those styles
-    #shapefile:
-        #multipatch_split: 2000000   # rows before the .shp splits per
-                                 # timestep
     #canopy_file_from: null      # LAD source; default input.static_driver
 
     # --- 9e. Record selection -----------------------------------------

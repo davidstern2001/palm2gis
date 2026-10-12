@@ -171,19 +171,9 @@ DEFAULTS = {
         "file_from": None,         # SURFACE_DATA_NETCDF*
         "prefix": "palm_",         # output name prefix
         "variables": [],           # e.g. ["theta_surface"]
-        # ESRI MultiPatch shapefile: ArcGIS's native 3D geometry type,
-        # and what a 3D Object scene layer is published from. One file,
-        # all element orientations (use `orient` to filter), all
-        # timesteps. DBF limits apply - see the notes in surfaces.py.
-        "multipatch_to": None,
-        "write_multipatch": True,
-        # Split into one shapefile per timestep once elements x times
-        # exceeds this. A .shp and its .dbf are each capped at 2 GB.
-        "multipatch_split": 2_000_000,
         # File Geodatabase holding the same elements as PolygonZ. The
-        # GeoPackage is for QGIS; this is what ArcGIS opens natively,
-        # and unlike the shapefile it keeps real datetimes, full-length
-        # field names and NULLs.
+        # GeoPackage is for QGIS; this is what ArcGIS opens natively, with
+        # real datetimes, full-length field names and NULLs.
         "fgdb_to": None,
         "write_fgdb": True,
         # Add `t_surface` - the actual SURFACE (skin) temperature - next
@@ -335,8 +325,13 @@ def _migrate_renamed_keys(user):
 # a warning, so an existing job config still runs instead of silently
 # producing less than it asks for.
 _REMOVED_KEYS = {
-    "surfaces": dict.fromkeys(("write_topview_raster", "write_topview_netcdf",
-                               "write_walls_gpkg", "wall_lines"), "0.19.0"),
+    "surfaces": {**dict.fromkeys(("write_topview_raster",
+                                  "write_topview_netcdf",
+                                  "write_walls_gpkg", "wall_lines"),
+                                 "0.19.0"),
+                 # The MultiPatch shapefile.
+                 **dict.fromkeys(("write_multipatch", "multipatch_to",
+                                  "multipatch_split"), "0.30.0")},
     "canopy": dict.fromkeys(("write_lai", "write_canopy_height",
                              "lad_threshold"), "0.19.0"),
     # The wind GeoPackage (points / 3D arrows above the surface).

@@ -655,7 +655,6 @@ def verify_regressions(tmp, out, pipeline_main):
     """
     import numpy as _np
     import pyogrio
-    import struct
     from netCDF4 import Dataset
     import sys as _sys
     _sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -736,17 +735,9 @@ def verify_regressions(tmp, out, pipeline_main):
           "guard: a raw file holding Celsius `ta` is not rejected",
           failures)
 
-    # -- multipatch --------------------------------------------------------
-    shp = out / "test_surfaces.shp"
-    st = struct.unpack("<i", shp.read_bytes()[32:36])[0]
-    check(st == 31, f"multipatch: shapefile shape type is 31 (got {st})",
-          failures)
-    mp = pyogrio.read_dataframe(shp)
-    check(mp.geometry.iloc[0].has_z,
-          "multipatch: geometry carries z", failures)
-    check(all(len(c) <= 10 for c in mp.columns if c != "geometry"),
-          "multipatch: every field name fits DBF's 10 characters",
-          failures)
+    # -- no multipatch ------------------------------------------------------
+    check(not list(out.glob("test_surfaces*.shp")),
+          "surfaces: no MultiPatch shapefile (removed in 0.30.0)", failures)
 
     # -- file geodatabase --------------------------------------------------
     gdb = out / "test_surfaces.gdb"
@@ -1139,8 +1130,6 @@ surfaces:
         file: '{{name}}_surfaces.gpkg'
     all_elements_fgdb:
         file: '{{name}}_surfaces.gdb'
-    all_elements_multipatch:
-        file: '{{name}}_surfaces.shp'
 wind:
     netcdf:
         file: '{{name}}_wind.nc'
@@ -1164,8 +1153,7 @@ advanced:
             ("voxel", ("file_from", "file_to", "do_velocity", "scalars",
                        "derive_ta")),
             ("surfaces", ("file_from", "variables", "derive_t_surface",
-                          "write_all_elements_gpkg", "write_fgdb",
-                          "write_multipatch")),
+                          "write_all_elements_gpkg", "write_fgdb")),
             ("wind", ("file_from", "grid_to", "grid_heights",
                       "grid_stride")),
             ("canopy", ("write_volume",))))
@@ -1176,7 +1164,7 @@ advanced:
     out = tmp / "out_new"
     names = _output_names(out)
     want = {"test_voxel.nc", "test_surfaces.gpkg", "test_surfaces.gdb",
-            "test_surfaces.shp", "test_wind/test_wind_z180m.nc",
+            "test_wind/test_wind_z180m.nc",
             "test_wind/test_wind_z183m.nc", "test_lad_3d.nc"}
     check(rc == 0 and names == want,
           f"layout: run writes exactly the named files ({sorted(names)})",
@@ -1216,23 +1204,32 @@ advanced:
                              "        file: '{name}_wind.gpkg'\n"
                              "        every_nth_column: 2\n")
                     .replace("file: '{name}_surfaces.gdb'", "file: null")
-                    .replace("file: '{name}_surfaces.shp'", "file: null"))
+                    .replace("    all_elements_gpkg:\n",
+                             "    all_elements_multipatch:\n"
+                             "        file: '{name}_surfaces.shp'\n"
+                             "    all_elements_gpkg:\n"))
     rc = pipeline_main(["-c", str(only), "--stages", "wind", "surfaces"])
     names = _output_names(tmp / "out_only")
     check(rc == 0 and names == {"test_wind/test_wind_z180m.nc",
                                 "test_wind/test_wind_z183m.nc",
                                 "test_surfaces.gpkg"},
-          f"layout: null files are skipped, wind.gpkg of an old config is "
-          f"ignored ({sorted(names)})", failures)
+          f"layout: null files are skipped, wind.gpkg and "
+          f"all_elements_multipatch of an old config are ignored "
+          f"({sorted(names)})", failures)
     legacy_old = tmp / "config_legacy_gpkg.yaml"
     legacy_old.write_text(
         (tmp / "config.yaml").read_text()
         .replace("grid_to: test_wind.nc",
                  "grid_to: test_wind.nc\n  file_to: test_wind.gpkg\n"
-                 "  heights_agl: [2.0]\n  write_lines_3d: true"))
+                 "  heights_agl: [2.0]\n  write_lines_3d: true")
+        .replace("  write_all_elements_gpkg: true",
+                 "  write_all_elements_gpkg: true\n  write_multipatch: true\n"
+                 "  multipatch_split: 10"))
     lc = Config(str(legacy_old))
     check(not {"file_to", "heights_agl", "write_lines_3d"}
-          & set(lc["wind"].keys()),
+          & set(lc["wind"].keys())
+          and not {"write_multipatch", "multipatch_split"}
+          & set(lc["surfaces"].keys()),
           "config: legacy wind GeoPackage keys load and are dropped",
           failures)
     with Dataset(tmp / "out_only" / "test_wind" / "test_wind_z183m.nc") as nc:
@@ -1537,8 +1534,8 @@ surfaces:
     variables: [theta_surface]
     all_elements_gpkg:
         file: '{{name}}_surfaces.gpkg'
-    all_elements_multipatch:
-        file: '{{name}}_surfaces.shp'
+    all_elements_fgdb:
+        file: '{{name}}_surfaces.gdb'
 wind:
     netcdf:
         file: '{{name}}_wind.nc'
@@ -1655,9 +1652,9 @@ advanced:
           and np.allclose(a[:, 2], b[:, 2]),
           "output crs: surface vertices = UTM vertices transformed, z same",
           failures)
-    shp = gpd.read_file(out / "test_surfaces.shp")
-    check(shp.crs is not None and shp.crs.to_epsg() == 4326,
-          "output crs: multipatch .prj is EPSG:4326", failures)
+    fg = gpd.read_file(out / "test_surfaces.gdb", layer="surfaces")
+    check(fg.crs is not None and fg.crs.to_epsg() == 4326,
+          "output crs: File Geodatabase in EPSG:4326", failures)
 
     # -- canopy: total leaf area conserved --------------------------------
     og = pg.reproj.grid()

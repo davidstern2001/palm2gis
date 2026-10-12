@@ -5,12 +5,9 @@ One table, used by every output:
   * NetCDF (voxel, wind grid, canopy) - written as `long_name`, which
     ArcGIS Pro shows as the variable's Description when a voxel or
     multidimensional layer is added.
-  * GeoPackage (surfaces, wind) - written to `gpkg_data_columns`: `name`
+  * GeoPackage (surfaces) - written to `gpkg_data_columns`: `name`
     is the field alias, `description` the longer text.
   * File Geodatabase (surfaces) - written as the field alias.
-
-A shapefile has no place for either, so the multipatch output carries
-none.
 """
 
 import sqlite3

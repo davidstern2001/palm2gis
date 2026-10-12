@@ -30,7 +30,7 @@ Every run first reads the **static driver** (and optionally the `_p3d` namelist 
 | # | Stage | What it produces |
 |---|-------|------------------|
 | 1 | `voxel` | CF-compliant NetCDF for the ArcGIS Pro Voxel Layer — destaggered `u`/`v`/`w` plus chosen scalars on `(time, z, y, x)`, terrain and building cells as NoData |
-| 2 | `surfaces` | Every ground, roof and wall element as a time-enabled PolygonZ quad: GeoPackage (QGIS), MultiPatch shapefile and File Geodatabase (ArcGIS) |
+| 2 | `surfaces` | Every ground, roof and wall element as a time-enabled PolygonZ quad: GeoPackage (QGIS) and File Geodatabase (ArcGIS) |
 | 3 | `wind` | Gridded netCDF per absolute height with `u`, `v`, `w`, `speed`, `dir_met` per timestep, for ArcGIS Pro's flow / vector-field renderers — all heights in one folder |
 | 4 | `canopy` | Plant canopy from the static driver: the LAD volume lifted onto absolute heights, as a voxel NetCDF |
 
@@ -103,8 +103,7 @@ Everything is written under `project.output_dir` (relative to `project.root`), w
 |------|-------|-----------|
 | `voxel.netcdf` | voxel | ArcGIS Pro: **Local Scene → Add Data → Multidimensional Voxel Layer**. Pick a variable, get a true 3D volume with isosurfaces and section slicing — the GIS counterpart of ParaView volume rendering |
 | `surfaces.all_elements_gpkg` | surfaces | Every surface element — ground, roofs and all four wall orientations — as PolygonZ, one row per element per timestep, with `orient`, `z` and `z_agl` columns. The largest output |
-| `surfaces.all_elements_multipatch` (`.shp`) | surfaces | **ESRI MultiPatch** (shape type 31), ArcGIS's native 3D geometry type and what a 3D Object scene layer is published from. One file, every orientation — filter on `orient`. DBF limits apply: field names are capped at 10 characters and `time` is an ISO **string**, not a datetime, so time-enable it as text. `azimuth` is omitted (no numeric NULL in a shapefile); it is recoverable from `orient` |
-| `surfaces.all_elements_fgdb` (`.gdb`) | surfaces | **File Geodatabase**, feature classes `surfaces` and `walls`, the same elements as PolygonZ. What ArcGIS opens natively, and unlike the shapefile it keeps real datetimes, full-length field names and NULLs — nothing is lost relative to the GeoPackage |
+| `surfaces.all_elements_fgdb` (`.gdb`) | surfaces | **File Geodatabase**, feature classes `surfaces` and `walls`, the same elements as PolygonZ. What ArcGIS opens natively, with real datetimes, full-length field names and NULLs — nothing is lost relative to the GeoPackage. (The MultiPatch shapefile was removed in 0.30.0: the geodatabase carries the same elements without the shapefile's 10-character field names and text-only times.) |
 | `wind.netcdf` | wind | **One file per absolute height** (m a.s.l.): every level of the voxel's range by default, or those in `wind.netcdf.heights`, `(time, z, y, x)` with `u`, `v`, `w`, `speed`, `dir_met`, for ArcGIS Pro's **flow / vector-field** renderers; collected in one folder named after the file, `<file>/<file>_z<height>m.nc` (or put `{z}` in the name). A height between two PALM levels is interpolated linearly; cells where either level is inside terrain or a building are NoData. See the recipe below |
 
 Because the style is stored inside each GeoPackage, those files contain a second, non-spatial `layer_styles` table. QGIS hides it automatically, but when reading a GeoPackage in your own scripts, name the layer explicitly — `gpd.read_file(path, layer="surfaces")` — or GeoPandas/pyogrio warns about the ambiguity. Set `advanced.qgis.styles: false` if you would rather have single-layer files.
@@ -121,7 +120,7 @@ Because the style is stored inside each GeoPackage, those files contain a second
 
 **Output in another CRS (`project.output_crs`).** An ArcGIS scene in WGS 84 wants files that *are* in EPSG:4326, not files it can reproject on the fly. `project.output_crs: 'EPSG:4326'` (any CRS pyproj knows works) writes every product in that CRS, and the two kinds of product are handled differently:
 
-- *Vector layers* (surfaces in all three formats) are transformed **exactly**: every vertex goes through pyproj, z stays metres above sea level.
+- *Vector layers* (surfaces, in both formats) are transformed **exactly**: every vertex goes through pyproj, z stays metres above sea level.
 - *Gridded netCDF* (voxel, wind, canopy) **cannot** be transformed exactly: PALM's grid is regular in UTM and not in lon/lat (at Prague UTM 33N is turned about 0.45° against the meridians, and a cell is not square in degrees). ArcGIS takes a voxel source only with 1-D coordinates and no auxiliary variables, so the data is **resampled** onto a regular `(lat, lon)` grid whose spacing is one native cell at the centre of the cut. The corners of the lon/lat box outside the (rotated) PALM domain are NoData. `advanced.netcdf.resampling` chooses how:
   - `conservative` (default): PALM is a finite-volume model, so each value is the *average* over its cell. Each output cell gets the average of the PALM cells it overlaps, weighted by the exact overlap area and taken over air cells only. Area means and totals are kept (the canopy's total leaf area to 10⁻⁸, the float32 storage precision), and a cell less than half air is NoData, so walls stay within half a cell of their true position. It is first-order: a smooth field is reproduced to ~10⁻⁴ of a cell at Prague's rotation. With `scipy` installed this takes about 2 s per variable and record on a 1000 × 1000 × 60 cut, roughly 4× nearest neighbour; without it, the numpy path is about 4× slower again.
   - `nearest`: each output cell copies the PALM cell under its centre. Values are exactly PALM's, positions good to half a cell.
@@ -311,5 +310,6 @@ the detail.
 
 ## Authors
 
-David Stern (IPR Praha / KFA MFF UK) — design, PALM workflow, this
-implementation.
+David Stern ([IPR Praha](https://iprpraha.cz/) /
+[KFA MFF UK](https://www.mff.cuni.cz/en/faculty/organizational-structure/department?code=115))
+— design, PALM workflow, this implementation.

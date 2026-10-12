@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.30.0
+
+**MultiPatch shapefile removed** *(changes the surfaces output)*
+
+- `surfaces.all_elements_multipatch` (`.shp`, ESRI MultiPatch) is gone.
+  The surface elements are written as the GeoPackage (QGIS) and the File
+  Geodatabase (ArcGIS), which holds the same elements without the
+  shapefile's 10-character field names, text-only times, missing NULLs
+  and 2 GB split. Configs that still set `all_elements_multipatch` or
+  `advanced.shapefile.multipatch_split` (legacy: `write_multipatch`,
+  `multipatch_to`, `multipatch_split`) run, with the settings ignored and
+  a note.
+- In the legacy config layout the shapefile was written by default
+  (`write_multipatch: true`); such configs now write one file fewer.
+
 ## 0.29.0
 
 **Wind GeoPackage removed; wind netCDFs in one folder** *(changes the wind

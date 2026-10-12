@@ -10,8 +10,8 @@ azimuth/zenith) become 3D polygons:
     slider / QGIS temporal controller can animate it and the quads render
     correctly in 3D scenes.
 
-  * The same elements are written as a GeoPackage (QGIS), an ESRI
-    MultiPatch shapefile and a File Geodatabase (ArcGIS), each optional.
+  * The same elements are written as a GeoPackage (QGIS) and a File
+    Geodatabase (ArcGIS), each optional.
 
 Elements with other zenith values (sloped roofs, downward-facing) are
 counted and reported but not converted.
@@ -21,8 +21,7 @@ import numpy as np
 from netCDF4 import Dataset
 
 import geopandas as gpd
-import pyogrio
-from shapely.geometry import MultiPolygon, Polygon
+from shapely.geometry import Polygon
 
 from ..descriptions import write_gpkg_descriptions, write_with_aliases
 from ..log import debug, get_logger, info, warning
@@ -245,49 +244,20 @@ def _wall_quad(x, y, z, az, grid):
 
 
 # ------------------------------
-# 3b. MULTIPATCH / FILE GEODATABASE
+# 3b. FILE GEODATABASE
 # ------------------------------
-# Shapefile field names are capped at 10 characters by DBF. Truncating
-# silently would collapse `theta_surface_derived` and `theta_surface_raw`
-# onto the same column, so the map is explicit and collisions are
-# reported rather than resolved by luck.
-_DBF_NAME_MAX = 10
-
-
-def _dbf_field_map(names):
-    """Map attribute names to DBF-legal (<=10 char) names, uniquely."""
-    out, taken = {}, set()
-    for n in names:
-        base = str(n)[:_DBF_NAME_MAX]
-        cand, k = base, 1
-        while cand in taken:
-            suffix = str(k)
-            cand = base[:_DBF_NAME_MAX - len(suffix)] + suffix
-            k += 1
-        if cand != n:
-            warning("[surfaces] shapefile field '{}' -> '{}' (DBF caps "
-                    "names at {} characters).", n, cand, _DBF_NAME_MAX)
-        out[n] = cand
-        taken.add(cand)
-    return out
-
-
-def _element_frames(cfg, grid, nc, its, times, xs, ys, zs, zen, az, idx,
-                    multipatch=False):
+def _element_frames(cfg, grid, nc, its, times, xs, ys, zs, zen, az, idx):
     """Yield (timestep index, GeoDataFrame) for the selected elements.
 
-    Shared by the GeoPackage, multipatch and File Geodatabase writers so
-    the geometry and the attributes cannot drift apart between products.
-    With `multipatch` the quads are wrapped in MultiPolygon, which is
-    what GDAL's shapefile driver needs to emit shape type 31.
+    Shared by the GeoPackage and File Geodatabase writers so the geometry
+    and the attributes cannot drift apart between products.
     """
     sf = cfg["surfaces"]
     # Quads are built in PALM's CRS and transformed as a whole into the
     # output CRS (project.output_crs): exact per vertex, z untouched.
-    quads = list(grid.reproj.geoms(
+    geoms = list(grid.reproj.geoms(
         [_element_quad(xs[s], ys[s], zs[s], zen[s], az[s], grid)
          for s in idx]))
-    geoms = [MultiPolygon([q]) for q in quads] if multipatch else quads
     orient = [_orientation(zen[s], az[s]) for s in idx]
 
     i = np.clip(np.round((xs[idx] - grid.dx / 2.0) / grid.dx).astype(int)
@@ -306,22 +276,10 @@ def _element_frames(cfg, grid, nc, its, times, xs, ys, zs, zen, az, idx,
                "zenith": zen[idx],
                "z": grid.abs_z(zs[idx]),
                "z_agl": z_agl,
-               "rec": np.full(idx.size, int(it), dtype="i4")}
-        if multipatch:
-            # DBF has no datetime type: GDAL downgrades one to a string
-            # with a warning. Writing the string deliberately means the
-            # format is chosen rather than inherited, and ArcGIS Pro can
-            # time-enable a text field on it.
-            stamp = dts_tz[it]
-            rec["time"] = [stamp.strftime("%Y-%m-%dT%H:%M:%S")
-                           if stamp is not None else ""] * idx.size
-            # `azimuth` is omitted on purpose: shapefiles have no numeric
-            # NULL, so the -9999 sentinel for horizontal faces could not
-            # be cleaned up. It is recoverable from `orient`.
-        else:
-            rec["time"] = [dts_tz[it]] * idx.size
-            rec["azimuth"] = np.where(np.isclose(az[idx], FILL), np.nan,
-                                      az[idx])
+               "rec": np.full(idx.size, int(it), dtype="i4"),
+               "time": [dts_tz[it]] * idx.size,
+               "azimuth": np.where(np.isclose(az[idx], FILL), np.nan,
+                                   az[idx])}
         for name, var, derive in output_vars(sf, nc.variables):
             vals = np.ma.filled(nc.variables[var][it, :], np.nan)[idx]
             rec[name] = _derive_values(
@@ -331,76 +289,13 @@ def _element_frames(cfg, grid, nc, its, times, xs, ys, zs, zen, az, idx,
                                       crs=grid.reproj.crs)
 
 
-def _elements_multipatch(cfg, grid, nc, its, times, xs, ys, zs, zen, az,
-                         idx, path):
-    """Write surface elements as an ESRI MultiPatch shapefile.
-
-    Multipatch (shape type 31) is ArcGIS's native 3D geometry type and
-    the one a 3D Object scene layer is published from. GDAL reaches it
-    only through the shapefile driver - OpenFileGDB writes MultiPolygon
-    Z, not multipatch - which brings the DBF limits handled above.
-    """
-    sf = cfg["surfaces"]
-    if idx.size == 0:
-        warning("[surfaces] no elements in bounds - {} skipped.",
-                cfg.disp(path))
-        return
-
-    split_at = int(sf["multipatch_split"] or 0)
-    # A .shp and its .dbf are each capped at 2 GB, so a long run has to
-    # be split. One file per timestep is the only split that keeps every
-    # feature's geometry intact.
-    per_time = bool(split_at) and idx.size * len(its) > split_at
-    if per_time:
-        info("[surfaces] {} x {} times > surfaces.multipatch_split ({}) - "
-             "one shapefile per timestep", idx.size, len(its), split_at)
-
-    written, frames = [], []
-    for n, it, frame in _element_frames(cfg, grid, nc, its, times, xs, ys,
-                                        zs, zen, az, idx, multipatch=True):
-        if per_time:
-            stamp = frame["time"].iloc[0].replace(":", "").replace("-", "")
-            out = path.with_name("{}_{}{}".format(path.stem, stamp,
-                                                  path.suffix))
-            _write_multipatch(frame, out)
-            written.append(out)
-        else:
-            frames.append(frame)
-
-    if not per_time:
-        frame = (frames[0] if len(frames) == 1
-                 else gpd.pd.concat(frames, ignore_index=True))
-        _write_multipatch(frame, path)
-        written.append(path)
-
-    info("[surfaces] wrote {}: {} multipatch features x {} times{}",
-         cfg.disp(path), idx.size, len(its),
-         " in {} files".format(len(written)) if len(written) > 1 else "")
-
-
-def _write_multipatch(frame, path):
-    """One shapefile, geometry forced to MultiPatch, fields DBF-safe."""
-    if path.exists():
-        path.unlink()
-    cols = [c for c in frame.columns if c != "geometry"]
-    frame = frame.rename(columns=_dbf_field_map(cols))
-    pyogrio.write_dataframe(frame, path, driver="ESRI Shapefile",
-                            SHPT="MULTIPATCH")
-    # .prj comes from the frame's CRS; without it ArcGIS drops the layer
-    # at the origin, which is a miserable thing to debug.
-    if not path.with_suffix(".prj").exists():
-        warning("[surfaces] {} has no .prj - the CRS was not written.",
-                path.name)
-
-
 def _elements_fgdb(cfg, grid, nc, its, times, xs, ys, zs, zen, az, idx,
                    path, layer):
     """Write the same elements as PolygonZ into a File Geodatabase.
 
     The GeoPackage keeps QGIS happy; this is the container ArcGIS opens
-    natively. Unlike the multipatch shapefile it preserves real
-    datetimes, full-length field names and NULLs, so nothing is lost
-    relative to the GeoPackage.
+    natively, with real datetimes, full-length field names and NULLs, so
+    nothing is lost relative to the GeoPackage.
     """
     if idx.size == 0:
         warning("[surfaces] no elements in bounds - {} skipped.",
@@ -560,15 +455,11 @@ def stage_surfaces(cfg, grid):
                             or "{}surfaces.gpkg".format(sf["prefix"]))
     do_all = (sf["write_all_elements_gpkg"]
               and cfg.prepare_output(all_path, "surfaces"))
-    mp_path = cfg.out_path(sf["multipatch_to"]
-                           or "{}surfaces.shp".format(sf["prefix"]))
-    do_mp = (sf["write_multipatch"]
-             and cfg.prepare_output(mp_path, "surfaces"))
     fgdb_path = cfg.out_path(sf["fgdb_to"]
                              or "{}surfaces.gdb".format(sf["prefix"]))
     do_fgdb = (sf["write_fgdb"]
                and cfg.prepare_output(fgdb_path, "surfaces"))
-    if not (do_all or do_mp or do_fgdb):
+    if not (do_all or do_fgdb):
         info("[surfaces] nothing to write, skipping.")
         return
 
@@ -586,19 +477,14 @@ def stage_surfaces(cfg, grid):
         if do_all:
             _all_elements_gpkg(cfg, grid, nc, its, times, xs, ys, zs, zen,
                                az, sel, all_path)
-        if do_mp or do_fgdb:
+        if do_fgdb:
             idx_all = np.where(sel)[0]
-            if do_mp:
-                _elements_multipatch(cfg, grid, nc, its, times, xs, ys, zs,
-                                     zen, az, idx_all, mp_path)
-            if do_fgdb:
-                _elements_fgdb(cfg, grid, nc, its, times, xs, ys, zs, zen,
-                               az, idx_all, fgdb_path, "surfaces")
-                wall_idx = np.where(
-                    sel & (np.abs(zen - 90.0) < 1.0e-3))[0]
-                if wall_idx.size:
-                    _elements_fgdb(cfg, grid, nc, its, times, xs, ys, zs,
-                                   zen, az, wall_idx, fgdb_path, "walls")
+            _elements_fgdb(cfg, grid, nc, its, times, xs, ys, zs, zen,
+                           az, idx_all, fgdb_path, "surfaces")
+            wall_idx = np.where(sel & (np.abs(zen - 90.0) < 1.0e-3))[0]
+            if wall_idx.size:
+                _elements_fgdb(cfg, grid, nc, its, times, xs, ys, zs,
+                               zen, az, wall_idx, fgdb_path, "walls")
 
 
 # ------------------------------
