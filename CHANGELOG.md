@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.28.1
+
+**Wind netCDF: NoData is NaN** *(fixes the ArcGIS flow renderer)*
+
+- The per-height wind files wrote NoData (terrain, buildings, outside the
+  domain) as `-9999`. ArcGIS Pro's flow renderer advected that fill as a
+  real `(u, v) = (-9999, -9999)` m/s vector: every building cell became
+  a huge wind towards the south-west, so all streaks ran along one
+  NE-SW axis, crossed the buildings, and drowned the real field. All five
+  variables now use `_FillValue = NaN`, which cannot be advected and is
+  NoData to every reader. Regenerate the `wind.netcdf` files.
+
 ## 0.28.0
 
 **Wind netCDF: one file per ABSOLUTE height** *(changes the wind output)*

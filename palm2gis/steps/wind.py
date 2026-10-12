@@ -24,7 +24,7 @@ from ..descriptions import long_name, write_gpkg_descriptions
 from ..log import debug, get_logger, info, warning
 from .georef import (check_product, check_raw_input, require_variables,
                      resolve_z_range, select_times)
-from .voxel import FILL, destagger, write_crs_var
+from .voxel import destagger, write_crs_var
 from .qgis_style import (embed_gpkg_style, vector_qml, write_sidecar)
 
 log = get_logger()
@@ -181,9 +181,14 @@ def _wind_levels(cfg, grid, nc, its, times, z_rel):
                 ("speed", "wind_speed", "m s-1"),
                 ("dir_met", "wind_from_direction", "degree"),
             )
+            # NoData is NaN, not -9999: ArcGIS Pro's flow renderer reads
+            # a -9999 fill in u/v as a real (-9999, -9999) m/s vector, so
+            # every building cell became a huge wind towards the south-west
+            # that swamped the real field and streaked through the walls.
+            # A NaN can never be advected and is NoData everywhere else.
             for name, std, units in specs:
                 ov = fout.createVariable(name, "f4", ("time", "z", yd, xd),
-                                         fill_value=FILL, zlib=True,
+                                         fill_value=np.nan, zlib=True,
                                          complevel=4)
                 ov.grid_mapping = gm
                 ov.standard_name = std
@@ -214,7 +219,7 @@ def _wind_levels(cfg, grid, nc, its, times, z_rel):
                 for name, val in (("u", u), ("v", v), ("w", comp["w"]),
                                   ("speed", sp), ("dir_met", dr)):
                     arr = np.array(val, dtype="f4")
-                    arr[mask_out | ~np.isfinite(arr)] = FILL
+                    arr[mask_out | ~np.isfinite(arr)] = np.nan
                     fout.variables[name][q, 0, ...] = arr
 
         written.append(path)

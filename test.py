@@ -790,6 +790,15 @@ def verify_regressions(tmp, out, pipeline_main):
         check(bool(_np.all(_np.diff(yv) > 0)),
               "wind grid: y ascending (not flipped like a GeoTIFF)",
               failures)
+        nc.set_auto_mask(False)
+        raw = [_np.asarray(nc[n][:]) for n in ("u", "v", "speed", "dir_met")]
+        nc.set_auto_mask(True)
+        check(all(_np.isnan(nc[n]._FillValue) for n in ("u", "v"))
+              and not any((r == -9999.0).any() for r in raw)
+              and _np.isnan(raw[0]).any(),
+              "wind grid: NoData is NaN, not -9999 (the ArcGIS flow "
+              "renderer advects a -9999 fill as a real u/v vector)",
+              failures)
         g = _np.ma.filled(nc["u"][0, 0], _np.nan)
         ref = vu[k180]
         check(_np.array_equal(_np.isnan(g), _np.isnan(ref))
