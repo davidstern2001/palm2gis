@@ -8,7 +8,7 @@ Stages:
               Voxel Layer (destaggered u/v/w + scalars, terrain as NoData)
     surfaces  SURFACE_DATA_NETCDF* -> every ground/roof/wall element as
               time-enabled PolygonZ (GeoPackage, File GDB),
-              walls as MultiPatch for web ArcGIS
+              and MultiPatch for web ArcGIS
     wind      DATA_3D_NETCDF* -> gridded NetCDF per absolute height,
               all heights in one folder
     canopy    static driver LAD -> voxel NetCDF on absolute heights
@@ -63,9 +63,9 @@ def stage_outputs(cfg, stage):
         if sf["write_all_elements_gpkg"]:
             out.append(cfg.out_path(sf["all_elements_to"]
                                     or "{}surfaces.gpkg".format(sf["prefix"])))
-        if sf["write_walls_multipatch"]:
-            out.append(cfg.out_path(sf["walls_multipatch_to"]
-                                    or "{}walls.shp".format(sf["prefix"])))
+        if sf["write_multipatch"]:
+            out.append(cfg.out_path(sf["multipatch_to"]
+                                    or "{}surfaces.shp".format(sf["prefix"])))
         if sf["write_fgdb"]:
             out.append(cfg.out_path(sf["fgdb_to"]
                                     or "{}surfaces.gdb".format(sf["prefix"])))

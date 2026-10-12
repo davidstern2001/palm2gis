@@ -176,13 +176,12 @@ DEFAULTS = {
         # real datetimes, full-length field names and NULLs.
         "fgdb_to": None,
         "write_fgdb": True,
-        # The WALLS as an ESRI MultiPatch shapefile, for web ArcGIS (a 3D
-        # object scene layer is published from multipatch): one feature
-        # per wall, one field per variable and record (<var>_<nnn>, map in
-        # <name>_fields.csv), NoData -9999. Ground and roofs are left to
-        # PALM's own top-view output.
-        "walls_multipatch_to": None,
-        "write_walls_multipatch": False,
+        # The same elements as an ESRI MultiPatch shapefile, for web
+        # ArcGIS (a 3D object scene layer is published from multipatch):
+        # one feature per element, one field per variable and record
+        # (<var>_<nnn>, map in <name>_fields.csv), NoData -9999.
+        "multipatch_to": None,
+        "write_multipatch": False,
         # Add `t_surface` - the actual SURFACE (skin) temperature - next
         # to every surface potential temperature (`theta_surface`),
         # converted at each face's own height. If the file already holds
@@ -336,9 +335,8 @@ _REMOVED_KEYS = {
                                   "write_topview_netcdf",
                                   "write_walls_gpkg", "wall_lines"),
                                  "0.19.0"),
-                 # The all-elements MultiPatch (now walls_multipatch).
-                 **dict.fromkeys(("write_multipatch", "multipatch_to",
-                                  "multipatch_split"), "0.30.0")},
+                 # The per-timestep split of the old MultiPatch.
+                 "multipatch_split": "0.30.0"},
     "canopy": dict.fromkeys(("write_lai", "write_canopy_height",
                              "lad_threshold"), "0.19.0"),
     # The wind GeoPackage (points / 3D arrows above the surface).

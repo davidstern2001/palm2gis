@@ -13,11 +13,10 @@ azimuth/zenith) become 3D polygons:
   * The same elements are written as a GeoPackage (mainly QGIS) and a
     File Geodatabase (local ArcGIS Pro), each optional.
 
-  * The WALLS alone go into an ESRI MultiPatch shapefile for web ArcGIS
-    (a 3D object scene layer): one feature per wall, one field per
-    variable and record, so the browser draws each wall once instead of
-    once per timestep. Ground and roofs are left to PALM's own top-view
-    output.
+  * The same elements also go into an ESRI MultiPatch shapefile for web
+    ArcGIS (a 3D object scene layer): one feature per element, one field
+    per variable and record, so the browser draws each face once instead
+    of once per timestep.
 
 Elements with other zenith values (sloped roofs, downward-facing) are
 counted and reported but not converted.
@@ -317,7 +316,7 @@ def _elements_fgdb(cfg, grid, nc, its, times, xs, ys, zs, zen, az, idx,
 
 
 # ------------------------------
-# 3c. WALLS MULTIPATCH (WEB ARCGIS)
+# 3c. MULTIPATCH (WEB ARCGIS)
 # ------------------------------
 # A shapefile is the only container GDAL writes ESRI MultiPatch into
 # (OpenFileGDB writes MultiPolygon Z), and a 3D object scene layer - what
@@ -343,19 +342,19 @@ def _short_codes(names, width):
     return out
 
 
-def _walls_multipatch(cfg, grid, nc, its, times, xs, ys, zs, zen, az, idx,
-                      path):
-    """Walls as MultiPatch, one feature per wall, one field per record.
+def _elements_multipatch(cfg, grid, nc, its, times, xs, ys, zs, zen, az,
+                         idx, path):
+    """Elements as MultiPatch, one feature each, one field per record.
 
     Fields: elem_id, orient, azimuth, z, z_agl, then <code>_<nnn> for
     every variable and selected record (nnn counts the selected records
     from 000). The field -> variable / time map is written beside the
     shapefile as <name>_fields.csv and logged. NoData is -9999: DBF has
-    no NULL.
+    no NULL (azimuth is -9999 on horizontal faces too).
     """
     sf = cfg["surfaces"]
     if idx.size == 0:
-        warning("[surfaces] no walls in bounds - {} skipped.",
+        warning("[surfaces] no elements in bounds - {} skipped.",
                 cfg.disp(path))
         return
     plan = list(output_vars(sf, nc.variables))
@@ -363,7 +362,8 @@ def _walls_multipatch(cfg, grid, nc, its, times, xs, ys, zs, zen, az, idx,
     n_fields = n_fixed + len(plan) * len(its)
     if n_fields > _DBF_FIELDS_MAX:
         raise ValueError(
-            "surfaces.walls_multipatch: {} variables x {} records = {} "
+            "surfaces.all_elements_multipatch: {} variables x {} records "
+            "= {} "
             "fields, above the shapefile's {} - narrow the time window or "
             "the variable list.".format(len(plan), len(its), n_fields,
                                         _DBF_FIELDS_MAX))
@@ -416,7 +416,7 @@ def _walls_multipatch(cfg, grid, nc, its, times, xs, ys, zs, zen, az, idx,
             f.write("{},{},{},{}\n".format(*row))
     for field, name, stamp, _it in rows[:len(plan)]:
         debug("[surfaces] {}: {} at {}", field, name, stamp)
-    info("[surfaces] wrote {}: {} walls as MultiPatch, {} fields per wall "
+    info("[surfaces] wrote {}: {} elements as MultiPatch, {} fields each "
          "({} variables x {} records; map in {})", cfg.disp(path),
          idx.size, len(rows), len(plan), len(its), fmap.name)
 
@@ -571,9 +571,9 @@ def stage_surfaces(cfg, grid):
                              or "{}surfaces.gdb".format(sf["prefix"]))
     do_fgdb = (sf["write_fgdb"]
                and cfg.prepare_output(fgdb_path, "surfaces"))
-    mp_path = cfg.out_path(sf["walls_multipatch_to"]
-                           or "{}walls.shp".format(sf["prefix"]))
-    do_mp = (sf["write_walls_multipatch"]
+    mp_path = cfg.out_path(sf["multipatch_to"]
+                           or "{}surfaces.shp".format(sf["prefix"]))
+    do_mp = (sf["write_multipatch"]
              and cfg.prepare_output(mp_path, "surfaces"))
     if not (do_all or do_fgdb or do_mp):
         info("[surfaces] nothing to write, skipping.")
@@ -602,9 +602,8 @@ def stage_surfaces(cfg, grid):
                 _elements_fgdb(cfg, grid, nc, its, times, xs, ys, zs,
                                zen, az, wall_idx, fgdb_path, "walls")
         if do_mp:
-            _walls_multipatch(cfg, grid, nc, its, times, xs, ys, zs, zen,
-                              az, np.where(sel & (np.abs(zen - 90.0)
-                                                  < 1.0e-3))[0], mp_path)
+            _elements_multipatch(cfg, grid, nc, its, times, xs, ys, zs,
+                                 zen, az, np.where(sel)[0], mp_path)
 
 
 # ------------------------------

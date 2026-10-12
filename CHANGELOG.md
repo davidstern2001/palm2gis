@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.32.0
+
+**The web MultiPatch holds every element** *(changes 0.31.0's output)*
+
+- `surfaces.walls_multipatch` is now `surfaces.all_elements_multipatch`
+  (`.shp`, default `<prefix>surfaces.shp`; legacy `write_multipatch` /
+  `multipatch_to`) and holds ground, roofs and walls, not the walls
+  alone. Still one feature per element with each variable and record as
+  a field, mapped in `<name>_fields.csv`; NoData -9999, which is also
+  the `azimuth` of horizontal faces.
+- `all_elements_multipatch` and the legacy `write_multipatch` are no
+  longer ignored as removed; `advanced.shapefile.multipatch_split` still
+  is (the file is one table, the records are fields).
+
 ## 0.31.0
 
 **Walls as MultiPatch for web ArcGIS** *(new output)*
