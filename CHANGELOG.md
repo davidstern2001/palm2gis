@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.31.0
+
+**Walls as MultiPatch for web ArcGIS** *(new output)*
+
+- `surfaces.walls_multipatch` (`.shp`; legacy `write_walls_multipatch` /
+  `walls_multipatch_to`) writes the walls alone as ESRI MultiPatch, the
+  input of a 3D object scene layer. One feature per wall, each variable
+  at each selected record as its own field (`<code>_<nnn>`, e.g.
+  `t_surf_000`), mapped to variable and time in `<name>_fields.csv`;
+  NoData -9999. A browser then draws each wall once instead of once per
+  record; ground and roofs come from PALM's own top-view output. More
+  than 255 fields (variables x records) stop the run with a hint.
+- README and template say what each surfaces format is for: `.gpkg`
+  mainly QGIS, `.gdb` local ArcGIS Pro, `.shp` (walls) web ArcGIS.
+- The note for the removed `all_elements_multipatch` now points at
+  `walls_multipatch`.
+
 ## 0.30.0
 
 **MultiPatch shapefile removed** *(changes the surfaces output)*

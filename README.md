@@ -30,7 +30,7 @@ Every run first reads the **static driver** (and optionally the `_p3d` namelist 
 | # | Stage | What it produces |
 |---|-------|------------------|
 | 1 | `voxel` | CF-compliant NetCDF for the ArcGIS Pro Voxel Layer — destaggered `u`/`v`/`w` plus chosen scalars on `(time, z, y, x)`, terrain and building cells as NoData |
-| 2 | `surfaces` | Every ground, roof and wall element as a time-enabled PolygonZ quad: GeoPackage (QGIS) and File Geodatabase (ArcGIS) |
+| 2 | `surfaces` | Every ground, roof and wall element as a time-enabled PolygonZ quad: GeoPackage (mainly QGIS) and File Geodatabase (local ArcGIS Pro); the walls alone as MultiPatch (web ArcGIS) |
 | 3 | `wind` | Gridded netCDF per absolute height with `u`, `v`, `w`, `speed`, `dir_met` per timestep, for ArcGIS Pro's flow / vector-field renderers — all heights in one folder |
 | 4 | `canopy` | Plant canopy from the static driver: the LAD volume lifted onto absolute heights, as a voxel NetCDF |
 
@@ -102,8 +102,9 @@ Everything is written under `project.output_dir` (relative to `project.root`), w
 | File | Stage | Loading it |
 |------|-------|-----------|
 | `voxel.netcdf` | voxel | ArcGIS Pro: **Local Scene → Add Data → Multidimensional Voxel Layer**. Pick a variable, get a true 3D volume with isosurfaces and section slicing — the GIS counterpart of ParaView volume rendering |
-| `surfaces.all_elements_gpkg` | surfaces | Every surface element — ground, roofs and all four wall orientations — as PolygonZ, one row per element per timestep, with `orient`, `z` and `z_agl` columns. The largest output |
-| `surfaces.all_elements_fgdb` (`.gdb`) | surfaces | **File Geodatabase**, feature classes `surfaces` and `walls`, the same elements as PolygonZ. What ArcGIS opens natively, with real datetimes, full-length field names and NULLs — nothing is lost relative to the GeoPackage. (The MultiPatch shapefile was removed in 0.30.0: the geodatabase carries the same elements without the shapefile's 10-character field names and text-only times.) |
+| `surfaces.all_elements_gpkg` (`.gpkg`) | surfaces | **Mainly for QGIS.** Every surface element — ground, roofs and all four wall orientations — as PolygonZ, one row per element per timestep, with `orient`, `z` and `z_agl` columns and the time setup embedded as a QGIS style. The largest output |
+| `surfaces.all_elements_fgdb` (`.gdb`) | surfaces | **For local ArcGIS Pro.** File Geodatabase, feature classes `surfaces` and `walls`, the same elements as PolygonZ, one row per element per timestep. What ArcGIS opens natively, with real datetimes, full-length field names and NULLs — nothing is lost relative to the GeoPackage, and the time slider works on `time` |
+| `surfaces.walls_multipatch` (`.shp`) | surfaces | **For web ArcGIS.** The walls alone as ESRI MultiPatch — what a 3D object scene layer is published from (ArcGIS Pro: Share → Web Layer, or Create 3D Object Scene Layer Content). One feature per wall instead of one per wall per timestep; each variable and record is its own field. See below |
 | `wind.netcdf` | wind | **One file per absolute height** (m a.s.l.): every level of the voxel's range by default, or those in `wind.netcdf.heights`, `(time, z, y, x)` with `u`, `v`, `w`, `speed`, `dir_met`, for ArcGIS Pro's **flow / vector-field** renderers; collected in one folder named after the file, `<file>/<file>_z<height>m.nc` (or put `{z}` in the name). A height between two PALM levels is interpolated linearly; cells where either level is inside terrain or a building are NoData. See the recipe below |
 
 Because the style is stored inside each GeoPackage, those files contain a second, non-spatial `layer_styles` table. QGIS hides it automatically, but when reading a GeoPackage in your own scripts, name the layer explicitly — `gpd.read_file(path, layer="surfaces")` — or GeoPandas/pyogrio warns about the ambiguity. Set `advanced.qgis.styles: false` if you would rather have single-layer files.
@@ -221,6 +222,20 @@ If the names were changed, the contents tell them apart: the 3D output is a grid
 The unstructured surface elements are classified by orientation, the same `zenith`/`azimuth` logic `paraview_vis` used to pick quad geometry, and reconstructed as the same quads the VTU writer produced, but as georeferenced PolygonZ features. Elements with any other zenith than 0 or 90 (sloped roofs) are counted and reported in a warning rather than silently dropped.
 
 The element layers hold **every** face of the static driver's geometry in a single layer, horizontal faces as dx × dy quads at their own height and walls as dz-tall vertical quads, each carrying the configured variables. The `orient` column (`up`, `down`, `wall_N`, `wall_E`, `wall_S`, `wall_W`) drives symbology and filtering, and `z_agl` (face height minus that column's terrain) separates roofs from ground **without** needing `buildings_2d`, which some static drivers leave empty. In a 3D scene this is the layer that shows a whole city block's surface temperature — roofs and every wall facing — at once. It is also by far the largest output: rows = elements × timesteps, and the run warns above two million.
+
+**Which format for what.**
+
+| Output | For | Why |
+| --- | --- | --- |
+| `all_elements_gpkg` (`.gpkg`) | QGIS, mainly | Open format, temporal style embedded, every element |
+| `all_elements_fgdb` (`.gdb`) | local ArcGIS Pro | ArcGIS's native container: datetimes for the time slider, full field names, NULLs, every element |
+| `walls_multipatch` (`.shp`) | web ArcGIS (scene viewer, ArcGIS Maps SDK for JavaScript) | Multipatch is what a 3D object scene layer is built from, and a scene layer is tiled with levels of detail, so a browser can draw tens of thousands of walls |
+
+**Walls for the web (`walls_multipatch`).** A browser cannot draw hundreds of thousands of polygons as a feature layer, and an elevation layer cannot hold a vertical face, so the web output is the walls alone — the added value over PALM's own top-view output of ground and roofs — as a multipatch, published as a 3D object scene layer. Three things keep it small and publishable:
+
+- **Walls only.** Ground and roofs come from PALM's top-view output.
+- **One feature per wall.** Each variable at each selected record is its own field, `<code>_<nnn>`: `<code>` is the variable shortened to fit DBF's 10 characters (`t_surface` → `t_surf`, `theta_surface` → `theta`) and `nnn` counts the selected records from `000`. `<name>_fields.csv` beside the shapefile maps every field to its variable and time. Animate in the web app by switching the field the renderer reads; scene layers do not use the time slider. A shapefile holds at most 255 fields, so variables × records can be at most 250 — narrow `time` or `variables` otherwise (the run says so).
+- **Fixed fields** `elem_id`, `orient` (`wall_N` / `wall_E` / `wall_S` / `wall_W`), `azimuth`, `z` (m a.s.l.) and `z_agl`. NoData is **−9999**: a shapefile has no NULL, so exclude it in the renderer's range.
 
 **Actual temperature from potential temperature.** PALM's prognostic variables are potential temperatures: `theta` in the volume, `theta_surface` (or `theta_surf`) at the surface. The actual temperatures are `ta` and `t_surface`, related by `T = theta * Pi`. The Exner function is **PALM's own basic state**, because PALM converted between the two with it: a constant-theta column fixed at initialisation, `Pi(z) = (surface_pressure / p0)^kappa - g z / (cp pt_surface)`, linear in z and unchanged for the whole run. (On real output `ta / theta` fits that line to under 0.0001 K; integrating the current theta profile instead, as up to 0.21 did, was off by about 0.3 K per km.)
 

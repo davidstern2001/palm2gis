@@ -37,6 +37,7 @@ SCHEMA = {
     "surfaces": {"enabled": None, "variables": None,
                  "all_elements_gpkg": _OUT_FILE,
                  "all_elements_fgdb": _OUT_FILE,
+                 "walls_multipatch": _OUT_FILE,
                  # Removed in 0.30.0, ignored with a note:
                  "all_elements_multipatch": _OUT_FILE},
     "wind": {"enabled": None,
@@ -193,7 +194,8 @@ def _number(val, where, minimum=None, integer=False):
 # opens nowhere, and GDAL refuses a File Geodatabase without `.gdb` only
 # AFTER the other surface layers have been written.
 _EXTENSIONS = {"netcdf": ".nc", "lad_netcdf": ".nc",
-               "all_elements_gpkg": ".gpkg", "all_elements_fgdb": ".gdb"}
+               "all_elements_gpkg": ".gpkg", "all_elements_fgdb": ".gdb",
+               "walls_multipatch": ".shp"}
 
 
 def _set(out, section, key, value):
@@ -445,16 +447,17 @@ def translate(user):
     sf = user.get("surfaces")
     sf_on = _enabled(sf, "surfaces")
     sf_files = {k: _file((sf or {}).get(k), name, f"surfaces.{k}")
-                for k in ("all_elements_gpkg", "all_elements_fgdb")}
+                for k in ("all_elements_gpkg", "all_elements_fgdb",
+                          "walls_multipatch")}
     adv_raw = user.get("advanced") or {}
     mp_blk = (sf or {}).get("all_elements_multipatch")
     if ((isinstance(mp_blk, dict) and mp_blk.get("file"))
             or adv_raw.get("shapefile") is not None
             or adv_raw.get("multipatch_split") is not None):
-        notes.append("The MultiPatch shapefile (surfaces."
-                     "all_elements_multipatch, advanced.shapefile) was "
-                     "removed in 0.30.0 and is ignored - use "
-                     "all_elements_fgdb for ArcGIS.")
+        notes.append("surfaces.all_elements_multipatch and "
+                     "advanced.shapefile were removed in 0.30.0 and are "
+                     "ignored - surfaces.walls_multipatch writes the walls "
+                     "as MultiPatch for web ArcGIS.")
     if sf_on and any(sf_files.values()):
         variables = _names(sf.get("variables"), "surfaces.variables")
         if not variables:
@@ -482,6 +485,8 @@ def translate(user):
             "all_elements_to": sf_files["all_elements_gpkg"],
             "write_fgdb": bool(sf_files["all_elements_fgdb"]),
             "fgdb_to": sf_files["all_elements_fgdb"],
+            "write_walls_multipatch": bool(sf_files["walls_multipatch"]),
+            "walls_multipatch_to": sf_files["walls_multipatch"],
         }
     else:
         out["surfaces"] = {"enabled": False}

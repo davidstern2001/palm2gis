@@ -128,17 +128,30 @@ voxel:
 # 6. SURFACES   ground, roofs and walls as 3D polygons  (reads surface_data)
 # ---------------------------------------------------------------------
 # One row per element per timestep, with orient (up / wall_N ...), z,
-# z_agl and a time field for the time slider.
+# z_agl and a time field for the time slider (.gpkg, .gdb); the web
+# MultiPatch holds the walls once each, records as fields.
 surfaces:
     #enabled: true
     # t_surface = actual skin temperature: PALM's own if the file has it,
     # otherwise derived from theta_surface (a POTENTIAL temperature).
     variables: [theta_surface, t_surface]
 
-    all_elements_gpkg:           # GeoPackage; QGIS and ArcGIS
+    # Which format for what:
+    #   .gpkg  mainly QGIS        every element, one row per element per
+    #                             record, temporal style embedded
+    #   .gdb   local ArcGIS Pro   the same elements; native datetimes for
+    #                             the time slider, long field names
+    #   .shp   web ArcGIS         the WALLS only, as MultiPatch, published
+    #                             as a 3D object scene layer: one feature
+    #                             per wall, one field per variable and
+    #                             record (<var>_<nnn>, map in
+    #                             <name>_fields.csv), NoData -9999
+    all_elements_gpkg:           # GeoPackage - mainly QGIS
         file: '{name}_surfaces.gpkg'
-    all_elements_fgdb:           # File Geodatabase; ArcGIS native, keeps
-        file: null               # datetimes and long field names
+    all_elements_fgdb:           # File Geodatabase - local ArcGIS Pro
+        file: null
+    walls_multipatch:            # MultiPatch shapefile - web ArcGIS
+        file: null
 
 
 # ---------------------------------------------------------------------

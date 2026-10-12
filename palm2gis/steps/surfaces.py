@@ -10,8 +10,14 @@ azimuth/zenith) become 3D polygons:
     slider / QGIS temporal controller can animate it and the quads render
     correctly in 3D scenes.
 
-  * The same elements are written as a GeoPackage (QGIS) and a File
-    Geodatabase (ArcGIS), each optional.
+  * The same elements are written as a GeoPackage (mainly QGIS) and a
+    File Geodatabase (local ArcGIS Pro), each optional.
+
+  * The WALLS alone go into an ESRI MultiPatch shapefile for web ArcGIS
+    (a 3D object scene layer): one feature per wall, one field per
+    variable and record, so the browser draws each wall once instead of
+    once per timestep. Ground and roofs are left to PALM's own top-view
+    output.
 
 Elements with other zenith values (sloped roofs, downward-facing) are
 counted and reported but not converted.
@@ -21,7 +27,8 @@ import numpy as np
 from netCDF4 import Dataset
 
 import geopandas as gpd
-from shapely.geometry import Polygon
+import pyogrio
+from shapely.geometry import MultiPolygon, Polygon
 
 from ..descriptions import write_gpkg_descriptions, write_with_aliases
 from ..log import debug, get_logger, info, warning
@@ -309,6 +316,111 @@ def _elements_fgdb(cfg, grid, nc, its, times, xs, ys, zs, zen, az, idx,
          cfg.disp(path), layer, idx.size, len(its))
 
 
+# ------------------------------
+# 3c. WALLS MULTIPATCH (WEB ARCGIS)
+# ------------------------------
+# A shapefile is the only container GDAL writes ESRI MultiPatch into
+# (OpenFileGDB writes MultiPolygon Z), and a 3D object scene layer - what
+# ArcGIS shows in a browser - is published from multipatch. The DBF
+# beside it caps field names at 10 characters and a table at 255 fields,
+# and has no NULL, so the layout is "wide" and spelled out explicitly.
+_DBF_NAME_MAX = 10
+_DBF_FIELDS_MAX = 255
+
+
+def _short_codes(names, width):
+    """Unique field-name stems of at most *width* characters."""
+    out, taken = {}, set()
+    for n in names:
+        base = str(n)[:width].rstrip("_") or "v"
+        cand, k = base, 1
+        while cand in taken:
+            suffix = str(k)
+            cand = base[:width - len(suffix)] + suffix
+            k += 1
+        out[n] = cand
+        taken.add(cand)
+    return out
+
+
+def _walls_multipatch(cfg, grid, nc, its, times, xs, ys, zs, zen, az, idx,
+                      path):
+    """Walls as MultiPatch, one feature per wall, one field per record.
+
+    Fields: elem_id, orient, azimuth, z, z_agl, then <code>_<nnn> for
+    every variable and selected record (nnn counts the selected records
+    from 000). The field -> variable / time map is written beside the
+    shapefile as <name>_fields.csv and logged. NoData is -9999: DBF has
+    no NULL.
+    """
+    sf = cfg["surfaces"]
+    if idx.size == 0:
+        warning("[surfaces] no walls in bounds - {} skipped.",
+                cfg.disp(path))
+        return
+    plan = list(output_vars(sf, nc.variables))
+    n_fixed = 5
+    n_fields = n_fixed + len(plan) * len(its)
+    if n_fields > _DBF_FIELDS_MAX:
+        raise ValueError(
+            "surfaces.walls_multipatch: {} variables x {} records = {} "
+            "fields, above the shapefile's {} - narrow the time window or "
+            "the variable list.".format(len(plan), len(its), n_fields,
+                                        _DBF_FIELDS_MAX))
+    digits = max(3, len(str(len(its) - 1)))
+    codes = _short_codes([name for name, _v, _d in plan],
+                         _DBF_NAME_MAX - 1 - digits)
+
+    quads = grid.reproj.geoms(
+        [_element_quad(xs[s], ys[s], zs[s], zen[s], az[s], grid)
+         for s in idx])
+    i = np.clip(np.round((xs[idx] - grid.dx / 2.0) / grid.dx).astype(int)
+                - grid.nx0, 0, grid.zt.shape[1] - 1)
+    j = np.clip(np.round((ys[idx] - grid.dy / 2.0) / grid.dy).astype(int)
+                - grid.ny0, 0, grid.zt.shape[0] - 1)
+    rec = {"elem_id": idx.astype("i4"),
+           "orient": [_orientation(zen[s], az[s]) for s in idx],
+           "azimuth": az[idx].astype("f4"),
+           "z": grid.abs_z(zs[idx]),
+           "z_agl": zs[idx] - grid.zt[j, i]}
+    dts = grid.times_to_datetime(times, tz_aware=True)
+    rows = []
+    for n, it in enumerate(its):
+        stamp = dts[it]
+        stamp = stamp.strftime("%Y-%m-%dT%H:%M:%S%z") if stamp else ""
+        for name, var, derive in plan:
+            vals = np.ma.filled(nc.variables[var][it, :], np.nan)[idx]
+            vals = _derive_values(
+                cfg, vals, zs[idx], derive, name=name,
+                src_units=getattr(nc.variables[var], "units", None))
+            field = "{}_{:0{}d}".format(codes[name], n, digits)
+            rec[field] = np.where(np.isfinite(vals), vals,
+                                  FILL).astype("f4")
+            rows.append((field, name, stamp, int(it)))
+    frame = gpd.GeoDataFrame(rec, geometry=[MultiPolygon([q])
+                                            for q in quads],
+                             crs=grid.reproj.crs)
+    if path.exists():
+        path.unlink()
+    pyogrio.write_dataframe(frame, path, driver="ESRI Shapefile",
+                            SHPT="MULTIPATCH")
+    # .prj comes from the frame's CRS; without it ArcGIS drops the layer
+    # at the origin, which is a miserable thing to debug.
+    if not path.with_suffix(".prj").exists():
+        warning("[surfaces] {} has no .prj - the CRS was not written.",
+                path.name)
+    fmap = path.with_name(path.stem + "_fields.csv")
+    with open(fmap, "w", encoding="utf-8") as f:
+        f.write("field,variable,time,record\n")
+        for row in rows:
+            f.write("{},{},{},{}\n".format(*row))
+    for field, name, stamp, _it in rows[:len(plan)]:
+        debug("[surfaces] {}: {} at {}", field, name, stamp)
+    info("[surfaces] wrote {}: {} walls as MultiPatch, {} fields per wall "
+         "({} variables x {} records; map in {})", cfg.disp(path),
+         idx.size, len(rows), len(plan), len(its), fmap.name)
+
+
 def _elements_gpkg(cfg, grid, nc, its, times, xs, ys, zs, zen, az, sel,
                    path, idx, kind):
     """Write one GeoPackage row per surface element per timestep.
@@ -459,7 +571,11 @@ def stage_surfaces(cfg, grid):
                              or "{}surfaces.gdb".format(sf["prefix"]))
     do_fgdb = (sf["write_fgdb"]
                and cfg.prepare_output(fgdb_path, "surfaces"))
-    if not (do_all or do_fgdb):
+    mp_path = cfg.out_path(sf["walls_multipatch_to"]
+                           or "{}walls.shp".format(sf["prefix"]))
+    do_mp = (sf["write_walls_multipatch"]
+             and cfg.prepare_output(mp_path, "surfaces"))
+    if not (do_all or do_fgdb or do_mp):
         info("[surfaces] nothing to write, skipping.")
         return
 
@@ -485,6 +601,10 @@ def stage_surfaces(cfg, grid):
             if wall_idx.size:
                 _elements_fgdb(cfg, grid, nc, its, times, xs, ys, zs,
                                zen, az, wall_idx, fgdb_path, "walls")
+        if do_mp:
+            _walls_multipatch(cfg, grid, nc, its, times, xs, ys, zs, zen,
+                              az, np.where(sel & (np.abs(zen - 90.0)
+                                                  < 1.0e-3))[0], mp_path)
 
 
 # ------------------------------
