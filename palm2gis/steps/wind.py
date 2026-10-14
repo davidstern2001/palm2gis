@@ -16,7 +16,7 @@ import numpy as np
 from netCDF4 import Dataset
 
 from ..descriptions import long_name
-from ..log import debug, get_logger, info, warning
+from ..log import debug, get_logger, info, stopwatch, warning
 from .georef import (check_product, check_raw_input, require_variables,
                      resolve_z_range, select_times)
 from .voxel import destagger, write_crs_var
@@ -115,6 +115,7 @@ def _wind_levels(cfg, grid, nc, its, times, z_rel):
         path = cfg.out_path(level_path(wd["grid_to"], z_abs))
         if not cfg.prepare_output(path, "wind"):
             continue
+        sw = stopwatch()
         target = z_abs - grid.origin_z          # PALM's relative height
         br = _bracket(z_rel, target)
         if br is None:
@@ -215,8 +216,8 @@ def _wind_levels(cfg, grid, nc, its, times, z_rel):
 
         written.append(path)
         info("[wind] wrote {}: {} x {} x {} (t,{},{}) at {:g} m a.s.l., "
-             "u, v, w, speed, dir_met", cfg.disp(path), len(its),
-             og.shape[0], og.shape[1], yd, xd, z_abs)
+             "u, v, w, speed, dir_met in {}", cfg.disp(path), len(its),
+             og.shape[0], og.shape[1], yd, xd, z_abs, sw)
     if written:
         debug("[wind] ArcGIS Pro: Add Multidimensional Raster Layer as a "
               "Vector Field")

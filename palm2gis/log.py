@@ -150,6 +150,31 @@ def emit_to_file_only(msg, *args, level=None):
 # ------------------------------
 # 3. PALM-GeM-STYLE MESSAGE HELPERS ('{}' lazy formatting)
 # ------------------------------
+class _Stopwatch:
+    """Elapsed time since creation; str() gives '4.2 s' or '3 min 12 s'."""
+
+    def __init__(self):
+        import time
+        self._now = time.monotonic
+        self._t0 = self._now()
+
+    @property
+    def seconds(self):
+        return self._now() - self._t0
+
+    def __str__(self):
+        s = self.seconds
+        if s < 60.0:
+            return "{:.1f} s".format(s)
+        m, sec = divmod(int(round(s)), 60)
+        return "{:d} min {:02d} s".format(m, sec)
+
+
+def stopwatch():
+    """Start timing one product, for its "wrote ... in <time>" line."""
+    return _Stopwatch()
+
+
 def _fmt(msg, args):
     return msg.format(*args) if args else msg
 

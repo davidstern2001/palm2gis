@@ -30,7 +30,7 @@ import pyogrio
 from shapely.geometry import MultiPolygon, Polygon
 
 from ..descriptions import write_gpkg_descriptions, write_with_aliases
-from ..log import debug, get_logger, info, warning
+from ..log import debug, get_logger, info, stopwatch, warning
 from .georef import (check_product, check_raw_input, require_variables,
                      select_times)
 from .thermo import convert_temperature, exner_basic_state, \
@@ -303,6 +303,7 @@ def _elements_fgdb(cfg, grid, nc, its, times, xs, ys, zs, zen, az, idx,
     natively, with real datetimes, full-length field names and NULLs, so
     nothing is lost relative to the GeoPackage.
     """
+    sw = stopwatch()
     if idx.size == 0:
         warning("[surfaces] no elements in bounds - {} skipped.",
                 cfg.disp(path))
@@ -311,8 +312,8 @@ def _elements_fgdb(cfg, grid, nc, its, times, xs, ys, zs, zen, az, idx,
                                         zs, zen, az, idx):
         write_with_aliases(frame, path, "OpenFileGDB", layer,
                            append=(n > 0))
-    info("[surfaces] wrote {}: feature class '{}', {} elements x {} times",
-         cfg.disp(path), layer, idx.size, len(its))
+    info("[surfaces] wrote {}: feature class '{}', {} elements x {} times "
+         "in {}", cfg.disp(path), layer, idx.size, len(its), sw)
 
 
 # ------------------------------
@@ -369,6 +370,7 @@ def _elements_multipatch(cfg, grid, nc, its, times, xs, ys, zs, zen, az,
     shapefile as <name>_fields.csv and logged. NoData is -9999: DBF has
     no NULL (azimuth is -9999 on horizontal faces too).
     """
+    sw = stopwatch()
     sf = cfg["surfaces"]
     if idx.size == 0:
         warning("[surfaces] no elements in bounds - {} skipped.",
@@ -426,8 +428,8 @@ def _elements_multipatch(cfg, grid, nc, its, times, xs, ys, zs, zen, az,
     for field, name, stamp, _it in rows[:len(plan)]:
         debug("[surfaces] {}: {} at {}", field, name, stamp)
     info("[surfaces] wrote {}: {} elements as MultiPatch, {} fields each "
-         "({} variables x {} records; map in {})", cfg.disp(path),
-         idx.size, len(rows), len(plan), len(its), fmap.name)
+         "({} variables x {} records; map in {}) in {}", cfg.disp(path),
+         idx.size, len(rows), len(plan), len(its), fmap.name, sw)
 
 
 def _elements_gpkg(cfg, grid, nc, its, times, xs, ys, zs, zen, az, sel,
@@ -438,6 +440,7 @@ def _elements_gpkg(cfg, grid, nc, its, times, xs, ys, zs, zen, az, sel,
     roofs and each of the four wall orientations, each as a PolygonZ in
     absolute coordinates carrying the configured variables.
     """
+    sw = stopwatch()
     sf = cfg["surfaces"]
     if idx.size == 0:
         warning("[surfaces] no {} elements in bounds - {} skipped.",
@@ -534,9 +537,9 @@ def _elements_gpkg(cfg, grid, nc, its, times, xs, ys, zs, zen, az, sel,
         embed_gpkg_style(path, layer, qml)
 
     counts = gpd.pd.Series(orient).value_counts().to_dict()
-    info("[surfaces] wrote {}: {} elements x {} times ({})",
+    info("[surfaces] wrote {}: {} elements x {} times ({}) in {}",
          cfg.disp(path), idx.size, len(its),
-         ", ".join(f"{k} {v}" for k, v in sorted(counts.items())))
+         ", ".join(f"{k} {v}" for k, v in sorted(counts.items())), sw)
 
 
 def _all_elements_gpkg(cfg, grid, nc, its, times, xs, ys, zs, zen, az, sel,

@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.33.0
+
+**Run time per output in the log**
+
+- Every "wrote ..." line ends with the time that file took ("... in
+  42.3 s", "... in 3 min 12 s"), and each stage closes with "[stage]
+  stage done in ...". Shows where a real run spends its time before
+  anything is optimised.
+
 ## 0.32.1
 
 - `surfaces.all_elements_multipatch`: the shapefile's 255-field limit

@@ -27,7 +27,7 @@ from netCDF4 import Dataset
 from pyproj import CRS
 
 from ..descriptions import long_name
-from ..log import debug, get_logger, info, warning
+from ..log import debug, get_logger, info, stopwatch, warning
 from .histogram import voxel_statistics, write_sidecars
 from .georef import (check_product, check_raw_input, require_variables,
                      resolve_z_range, select_times)
@@ -178,6 +178,7 @@ def stage_voxel(cfg, grid):
     file_to = cfg.out_path(vx["file_to"])
     if not cfg.prepare_output(file_to, "voxel"):
         return
+    sw = stopwatch()
 
     with Dataset(file_from, "r") as nc:
         check_product(nc, "voxel", vx["file_from"])
@@ -604,6 +605,6 @@ def stage_voxel(cfg, grid):
     for p in write_sidecars(stats, file_to, len(its)):
         info("[voxel] wrote {}", cfg.disp(p))
 
-    info("[voxel] wrote {}: {} x {} x {} x {} (t,z,{},{}), {}",
+    info("[voxel] wrote {}: {} x {} x {} x {} (t,z,{},{}), {} in {}",
          cfg.disp(file_to), len(its), z_out.size, og.shape[0], og.shape[1],
-         yd, xd, ", ".join(out_vars))
+         yd, xd, ", ".join(out_vars), sw)

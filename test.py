@@ -1790,6 +1790,18 @@ def verify_log_last_run(tmp, pipeline_main):
     text = (tmp / "out" / "palm2gis.log").read_text(encoding="utf-8")
     check(text.count("palm2gis finished") == 1,
           "log: palm2gis.log holds only the last run", failures)
+    pipeline_main(["-c", cfg, "--overwrite"])
+    text = (tmp / "out" / "palm2gis.log").read_text(encoding="utf-8")
+    import re as _re
+    timed = _re.findall(r"wrote test_voxel\.nc: .* in \d+\.\d s", text)
+    check(bool(timed) and "[surfaces] stage done in" in text,
+          "log: each written file and each stage carry their run time",
+          failures)
+    from palm2gis.log import stopwatch
+    sw = stopwatch()
+    sw._t0 = sw._now() - 192.4
+    check(str(sw) == "3 min 12 s",
+          f"log: long times read as minutes ({sw})", failures)
     return failures
 
 

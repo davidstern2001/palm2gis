@@ -213,11 +213,14 @@ def main(argv=None):
             log.info(f"Stage {stage}: disabled, skipping.")
             continue
         progress(STAGE_LABELS.get(stage, stage))
+        t_stage = time.monotonic()
         try:
             STAGE_FUNCS[stage](cfg, grid)
         except Exception as exc:
             log.error(f"Stage {stage} failed: {exc}")
             return 1
+        log.info(f"[{stage}] stage done in "
+                 f"{time.monotonic() - t_stage:.1f} s")
         # Record the config behind whatever that stage actually produced,
         # and stamp each file so it can be identified on its own later.
         from .provenance import stamp_file

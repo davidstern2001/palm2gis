@@ -20,7 +20,7 @@ it raises AttributeError on any current install; it also ignored the
 import numpy as np
 from netCDF4 import Dataset
 
-from ..log import debug, get_logger, info, warning
+from ..log import debug, get_logger, info, stopwatch, warning
 from .georef import parse_time_bound
 from .voxel import write_crs_var
 
@@ -64,6 +64,7 @@ def stage_canopy(cfg, grid):
     if not cn["write_volume"]:
         info("[canopy] write_volume is off - nothing to write, skipping.")
         return
+    sw = stopwatch()
 
     with Dataset(src, "r") as nc:
         if "lad" not in nc.variables:
@@ -215,6 +216,6 @@ def stage_canopy(cfg, grid):
             ov[0] = np.where(dens > 0, dens, FILL)
 
     info("[canopy] wrote {}: 1 x {} x {} x {} (t,z,{},{}), {} at {}, "
-         "{} canopy cells",
+         "{} canopy cells in {}",
          cfg.disp(path), z_out.size, og.shape[0], og.shape[1], yd, xd, ", ".join(sorted(vols)),
-         t_label, int((lad_cut > 0).sum()))
+         t_label, int((lad_cut > 0).sum()), sw)
