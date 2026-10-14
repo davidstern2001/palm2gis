@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.34.0
+
+**An output can no longer delete an input** *(bug fix)*
+
+- With overwrite on, an existing file at an output path is deleted
+  before the new one is written, and that happened before the input was
+  opened. An output path that resolved to an input (an absolute path
+  pasted into the wrong line, `output_dir` on the folder with the PALM
+  output, a symlink) therefore deleted the PALM output, and the stage
+  then failed on the missing file. The config is now refused at load
+  time when any output resolves to an input file (static driver, p3d,
+  dynamic driver, 3D / surface data, canopy source, the config itself)
+  or, as a `.gdb` folder, would contain one. Nothing is read or deleted.
+- The job configs `holesovice_stern_adapt.yaml` and
+  `prague_center_stern.yaml` left the repository; `config/` is
+  git-ignored except `example_minimal.yaml`.
+
 ## 0.33.1
 
 **Shorter log lines**

@@ -50,9 +50,10 @@ pip install -r requirements.txt
 python test.py
 
 # 3. Make a config from the annotated template, then edit it
-#    NOTE: config/ holds project configs. If you ever re-extract this
-#    package over an existing checkout, extract to a scratch directory and
-#    copy files across, so your own configs are not replaced.
+#    NOTE: config/ holds your project configs; git ignores everything
+#    there except example_minimal.yaml, so they stay on your machine. If
+#    you ever re-extract this package over an existing checkout, extract
+#    to a scratch directory and copy files across.
 cp template.yaml config/my_project.yaml
 #    → set at least project.root, the input files, and a `file:` for
 #      each output you want

@@ -701,3 +701,28 @@ class Config:
                         "different filenames.".format(seen[key], stage,
                                                       Path(path).name))
                 seen[key] = stage
+
+        # An output on an INPUT: prepare_output deletes an existing file
+        # before writing (with overwrite on), and it runs before the
+        # input is opened - so the PALM output was deleted and the stage
+        # then failed on the missing file. Compared after resolving links
+        # and "..", and also when an output (a .gdb folder) would contain
+        # an input.
+        inputs = {"domain.static_driver": c["domain"]["static_driver"],
+                  "domain.p3d": c["domain"]["p3d"],
+                  "domain.dynamic_driver": c["domain"]["dynamic_driver"]}
+        for stage in STAGES:
+            if c[stage]["enabled"] and c[stage].get("file_from"):
+                inputs[f"{stage}.file_from"] = c[stage]["file_from"]
+        in_paths = {name: self.resolve(p).resolve()
+                    for name, p in inputs.items() if p}
+        if getattr(self, "_path", None):
+            in_paths["the config file"] = Path(self._path).resolve()
+        for key, stage in seen.items():
+            out = Path(key)
+            for name, inp in in_paths.items():
+                if inp == out or out in inp.parents:
+                    raise ConfigError(
+                        "{} output {} would overwrite {} ({}) - write the "
+                        "outputs somewhere else.".format(stage, out.name,
+                                                         name, inp))

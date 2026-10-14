@@ -771,6 +771,23 @@ def verify_regressions(tmp, out, pipeline_main):
     check(ok, "multipatch: values match the geodatabase per record",
           failures)
 
+    # an output on an input: refused at load time, the input survives
+    inp = (tmp / "test_3d").resolve()
+    size = inp.stat().st_size
+    for label, text in (
+            ("absolute path", (tmp / "config.yaml").read_text()
+             .replace("file_to: test_voxel.nc", f"file_to: {inp}")),
+            ("output_dir on the inputs", (tmp / "config.yaml").read_text()
+             .replace("output_dir: ./out", "output_dir: .")
+             .replace("file_to: test_voxel.nc", "file_to: test_3d"))):
+        clash = tmp / "config_clash.yaml"
+        clash.write_text(text)
+        rc = pipeline_main(["-c", str(clash), "--stages", "voxel",
+                            "--overwrite"])
+        check(rc != 0 and inp.exists() and inp.stat().st_size == size,
+              f"guard: an output on an input is refused ({label}), the "
+              f"input survives", failures)
+
     # too many fields: the run stops BEFORE writing the other products
     import palm2gis.steps.surfaces as _sfmod
     wide = tmp / "config_mp_wide.yaml"

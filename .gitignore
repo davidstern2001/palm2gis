@@ -8,3 +8,9 @@ __pycache__/
 .palm2gis_state.json
 palm2gis.log
 *.palm2gis.json
+
+# ------------------------------
+# project configs (machine-specific paths) stay local
+# ------------------------------
+config/*
+!config/example_minimal.yaml
