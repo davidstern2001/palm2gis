@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.34.1
+
+- README: a status note (what is not yet checked in ArcGIS on real
+  data, where to report problems) and the library versions the tests
+  pass with.
+
 ## 0.34.0
 
 **An output can no longer delete an input** *(bug fix)*

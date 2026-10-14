@@ -4,6 +4,8 @@
 
 From a PALM run's static driver and NetCDF outputs, `palm2gis` produces georeferenced GIS layers: a CF-compliant NetCDF that ArcGIS Pro opens directly as a 3D Voxel Layer (destaggered velocities and scalars, terrain as NoData), surface temperatures on every ground, roof and wall element as time-enabled 3D polygons, gridded wind at absolute heights for ArcGIS Pro's flow renderer, and the plant canopy's leaf area density as a voxel NetCDF. Every layer is written in absolute projected coordinates taken from the static driver's `origin_x`/`origin_y`, so it lands in the right place on the map with no manual shifting. It began as an adaptation of `paraview_vis`, a PALM visualisation script by [Martin Bureš](https://www.cs.cas.cz/staff/buresm/en) (Institute of Computer Science, Czech Academy of Sciences), and keeps its configuration concepts (domain, subdomain cut, timestep window) while targeting GIS software rather than ParaView. See [Origins and attribution](#origins-and-attribution).
 
+> **Status.** Two recent parts are not yet checked in ArcGIS on real data: the wind netCDF's NoData handling in the flow renderer (0.28.1) and publishing `surfaces.all_elements_multipatch` as a web scene layer (0.32). Please report problems at [GitHub Issues](https://github.com/davidstern2001/palm2gis/issues), with the version from the first line of `palm2gis.log`.
+
 ---
 
 ## Table of contents
@@ -43,6 +45,10 @@ Each stage is enabled/disabled in its own config section; the order (and the def
 ```bash
 # 1. Dependencies
 pip install -r requirements.txt
+#    Tested with Python 3.13, numpy 2.5, netCDF4 1.7, geopandas 1.2,
+#    shapely 2.2, pyproj 3.8, pyogrio 0.13, GDAL 3.12, PROJ 9.8. Install
+#    GDAL, rasterio and pyproj from ONE source (all conda-forge or all
+#    pip) - see the PROJ note below.
 
 # 2. Check that the environment works. This builds a small synthetic dataset
 #    in a temporary directory, runs the whole pipeline over it and verifies
