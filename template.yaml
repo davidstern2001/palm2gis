@@ -174,7 +174,15 @@ wind:
                                  # between two PALM levels the wind is
                                  # interpolated linearly, NoData where
                                  # either level is terrain or building
+                                 # (also the heights of the gpkg arrows)
         #every_nth_column: 1
+    gpkg:                        # 3D ARROWS (LineStringZ) at the same
+        file: null               # heights, along (u, v, w); fields time,
+                                 # z, u, v, w, speed_3d. No arrow inside
+                                 # terrain or buildings.
+        #every_nth_column: 1     # full resolution: columns x heights x
+                                 # records arrows - thin for overviews
+        #arrow_length_per_ms: 2.0   # metres of arrow per m/s
 
 
 # ---------------------------------------------------------------------

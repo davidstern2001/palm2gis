@@ -236,6 +236,7 @@ wind:
   file_from: test_3d
   grid_to: test_wind.nc
   grid_heights: [180.0, 183.0]
+  file_to: test_wind.gpkg
 """)
 
 
@@ -521,10 +522,9 @@ def verify_outputs(out):
               f"absolute levels", failures)
 
     # -- wind --------------------------------------------------------------
-    check(not (out / "test_wind.gpkg").exists()
-          and not list(out.glob("test_wind_z*.nc")),
-          "wind: no GeoPackage, no per-height files loose in the output "
-          "directory", failures)
+    check(not list(out.glob("test_wind_z*.nc")),
+          "wind: no per-height files loose in the output directory",
+          failures)
     with Dataset(out / "test_wind" / "test_wind_z183m.nc") as nc:
         dr = np.ma.filled(nc["dir_met"][:], np.nan)
         n_t = nc["time"].size
@@ -533,6 +533,38 @@ def verify_outputs(out):
     check(n_t == NT and abs(dmean - 243.4) < 3.0,
           f"wind: {NT} records, mean direction {dmean:.1f} deg close to "
           f"243.4", failures)
+
+    # 3D arrows: the netCDF's heights, columns in buildings skipped
+    arr = gpd.read_file(out / "test_wind.gpkg", layer="wind")
+    with Dataset(out / "test_wind" / "test_wind_z180m.nc") as nc:
+        u180 = np.ma.filled(nc["u"][0, 0], np.nan)
+        xs_, ys_ = np.asarray(nc["x"][:]), np.asarray(nc["y"][:])
+    with Dataset(out / "test_wind" / "test_wind_z183m.nc") as nc:
+        u183 = np.ma.filled(nc["u"][0, 0], np.nan)
+    n_air = int(np.isfinite(u180).sum() + np.isfinite(u183).sum())
+    check([c for c in arr.columns if c != "geometry"]
+          == ["time", "z", "u", "v", "w", "speed_3d"]
+          and arr.geometry.has_z.all()
+          and set(arr.geom_type) == {"LineString"}
+          and sorted(set(arr["z"].round(3))) == [180.0, 183.0]
+          and len(arr) == n_air * NT,
+          f"wind arrows: LineStringZ with time, z, u, v, w, speed_3d at "
+          f"the netCDF heights, one per air cell ({len(arr)} = {n_air} x "
+          f"{NT})", failures)
+    sp3 = np.sqrt(arr.u ** 2 + arr.v ** 2 + arr.w ** 2)
+    c = np.array([np.array(g.coords) for g in arr.geometry])
+    check(np.allclose(arr.speed_3d, sp3, atol=1e-4)
+          and np.allclose(c[:, 0, 2], arr.z, atol=1e-3)
+          and np.allclose(c[:, 1] - c[:, 0],
+                          2.0 * arr[["u", "v", "w"]].to_numpy(), atol=1e-3),
+          "wind arrows: speed_3d = |(u, v, w)|, start at z, length 2 m per "
+          "m/s along (u, v, w)", failures)
+    first = arr[(arr["time"] == arr["time"].min()) & (arr.z.round(3) == 180)]
+    ix = np.searchsorted(xs_, c[first.index, 0, 0])
+    iy = np.searchsorted(ys_, c[first.index, 0, 1])
+    check(np.allclose(first.u.to_numpy(), u180[iy, ix], atol=1e-5),
+          "wind arrows: u equals the netCDF at the same cell and height",
+          failures)
 
     return failures
 
@@ -1202,6 +1234,8 @@ wind:
         file: '{{name}}_wind.nc'
         heights: [180, 183]
         every_nth_column: 1
+    gpkg:
+        file: '{{name}}_wind.gpkg'
 canopy:
     lad_netcdf:
         file: '{{name}}_lad_3d.nc'
@@ -1223,7 +1257,7 @@ advanced:
                           "write_all_elements_gpkg", "write_fgdb",
                           "write_multipatch")),
             ("wind", ("file_from", "grid_to", "grid_heights",
-                      "grid_stride")),
+                      "grid_stride", "file_to", "stride", "arrow_scale")),
             ("canopy", ("write_volume",))))
     check(same, "layout: new config translates to the legacy settings",
           failures)
@@ -1233,7 +1267,8 @@ advanced:
     names = _output_names(out)
     want = {"test_voxel.nc", "test_surfaces.gpkg", "test_surfaces.gdb",
             "test_surfaces.shp", "test_wind/test_wind_z180m.nc",
-            "test_wind/test_wind_z183m.nc", "test_lad_3d.nc"}
+            "test_wind/test_wind_z183m.nc", "test_wind.gpkg",
+            "test_lad_3d.nc"}
     check(rc == 0 and names == want,
           f"layout: run writes exactly the named files ({sorted(names)})",
           failures)
@@ -1261,16 +1296,15 @@ advanced:
     check(len(a) == len(b) and list(a.columns) == list(b.columns),
           "layout: same surface layer as the legacy config", failures)
 
-    # null files are skipped; a pre-0.29 config that still asks for the
-    # wind GeoPackage runs, with the removed settings ignored
+    # null files are skipped; the removed wind settings of an old config
+    # are ignored
     only = tmp / "config_new_only.yaml"
     only.write_text(new.read_text()
                     .replace("./out_new", "./out_only")
                     .replace("wind:\n", "wind:\n"
-                             "    heights_above_surface: [2.0, 10.0]\n"
-                             "    gpkg:\n"
-                             "        file: '{name}_wind.gpkg'\n"
-                             "        every_nth_column: 2\n")
+                             "    heights_above_surface: [2.0, 10.0]\n")
+                    .replace("file: '{name}_wind.gpkg'",
+                             "file: null\n        arrows_3d: true")
                     .replace("file: '{name}_surfaces.gdb'", "file: null")
                     .replace("file: '{name}_surfaces.shp'", "file: null"))
     rc = pipeline_main(["-c", str(only), "--stages", "wind", "surfaces"])
@@ -1278,19 +1312,18 @@ advanced:
     check(rc == 0 and names == {"test_wind/test_wind_z180m.nc",
                                 "test_wind/test_wind_z183m.nc",
                                 "test_surfaces.gpkg"},
-          f"layout: null files are skipped, wind.gpkg of an old config is "
+          f"layout: null files are skipped, removed wind settings are "
           f"ignored ({sorted(names)})", failures)
     legacy_old = tmp / "config_legacy_gpkg.yaml"
     legacy_old.write_text(
         (tmp / "config.yaml").read_text()
         .replace("grid_to: test_wind.nc",
-                 "grid_to: test_wind.nc\n  file_to: test_wind.gpkg\n"
+                 "grid_to: test_wind.nc\n"
                  "  heights_agl: [2.0]\n  write_lines_3d: true")
         .replace("  write_all_elements_gpkg: true",
                  "  write_all_elements_gpkg: true\n  multipatch_split: 10"))
     lc = Config(str(legacy_old))
-    check(not {"file_to", "heights_agl", "write_lines_3d"}
-          & set(lc["wind"].keys())
+    check(not {"heights_agl", "write_lines_3d"} & set(lc["wind"].keys())
           and "multipatch_split" not in lc["surfaces"].keys(),
           "config: legacy wind GeoPackage keys load and are dropped",
           failures)
@@ -1605,6 +1638,9 @@ wind:
         file: '{{name}}_wind.nc'
         heights: [180, 183]
         every_nth_column: 2
+    gpkg:
+        file: '{{name}}_wind.gpkg'
+        every_nth_column: 2
 canopy:
     lad_netcdf:
         file: '{{name}}_lad_3d.nc'
@@ -1687,6 +1723,23 @@ advanced:
           "northward part west of the central meridian", failures)
     m = np.isfinite(u) & np.isfinite(v)
     check(m.any(), "output crs: voxel u/v hold data", failures)
+
+    # -- wind: arrows exact, attributes in the same frame ----------------
+    w3 = gpd.read_file(out / "test_wind.gpkg", layer="wind")
+    check(w3.crs.to_epsg() == 4326 and w3.geometry.has_z.all(),
+          "output crs: wind arrows 3D in EPSG:4326", failures)
+    g = w3[np.hypot(w3.u, w3.v) > 0]
+    c = np.array([np.array(ln.coords) for ln in g.geometry])
+    from pyproj import Geod
+    az, _, _ = Geod(ellps="WGS84").inv(c[:, 0, 0], c[:, 0, 1],
+                                       c[:, 1, 0], c[:, 1, 1])
+    d = (90.0 - az) - np.degrees(np.arctan2(g.v, g.u))
+    d = (d + 180.0) % 360.0 - 180.0
+    check(np.max(abs(d)) < 1e-3,
+          f"output crs: arrow bearing matches rotated u/v "
+          f"(max {np.max(abs(d)):.3f} deg)", failures)
+    check(np.allclose(c[:, 0, 2], g.z, atol=1e-3),
+          "output crs: arrow z unchanged (m above sea level)", failures)
 
     # -- wind: netCDF on lat/lon, direction from the rotated u/v ----------
     with Dataset(out / "test_wind" / "test_wind_z183m.nc") as nc:

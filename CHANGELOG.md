@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.35.0
+
+**3D wind arrows in a GeoPackage** *(new output)*
+
+- `wind.gpkg` (`file`, `every_nth_column` default 1,
+  `arrow_length_per_ms` default 2; legacy `file_to`, `stride`,
+  `arrow_scale`) writes layer `wind`: one LineStringZ per grid column,
+  height and record, from the cell centre along (u, v, w), at the same
+  absolute heights as the wind netCDF (`wind.netcdf.heights` or every
+  voxel level). Fields `time`, `z`, `u`, `v`, `w`, `speed_3d`. No arrow
+  inside terrain or buildings. Built in PALM's grid and transformed
+  exactly into `project.output_crs`, u / v turned to its east / north;
+  QGIS temporal and 3D style embedded. Warns above two million arrows.
+- `wind.heights_above_surface`, `gpkg.arrows_3d` and `gpkg.tilt_with_w`
+  (pre-0.29) are ignored with a note.
+
 ## 0.34.1
 
 - README: a status note (what is not yet checked in ArcGIS on real

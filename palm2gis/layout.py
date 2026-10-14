@@ -41,11 +41,12 @@ SCHEMA = {
     "wind": {"enabled": None,
              "netcdf": {"file": None, "heights": None,
                         "every_nth_column": None},
-             # Removed in 0.29.0 (the wind GeoPackage), ignored with a note:
-             "heights_above_surface": None,
              "gpkg": {"file": None, "every_nth_column": None,
-                      "arrows_3d": None, "arrow_length_per_ms": None,
-                      "tilt_with_w": None}},
+                      "arrow_length_per_ms": None,
+                      # pre-0.35, ignored with a note:
+                      "arrows_3d": None, "tilt_with_w": None},
+             # Removed in 0.29.0, ignored with a note:
+             "heights_above_surface": None},
     "canopy": {"enabled": None, "lad_netcdf": _OUT_FILE},
     "advanced": {
         # Subsections (0.25 onwards).
@@ -191,7 +192,7 @@ def _number(val, where, minimum=None, integer=False):
 # Extension each output writer needs. A GeoPackage written as `.nc`
 # opens nowhere, and GDAL refuses a File Geodatabase without `.gdb` only
 # AFTER the other surface layers have been written.
-_EXTENSIONS = {"netcdf": ".nc", "lad_netcdf": ".nc",
+_EXTENSIONS = {"netcdf": ".nc", "lad_netcdf": ".nc", "gpkg": ".gpkg",
                "all_elements_gpkg": ".gpkg", "all_elements_fgdb": ".gdb",
                "all_elements_multipatch": ".shp"}
 
@@ -489,14 +490,21 @@ def translate(user):
     wd = user.get("wind")
     wd_on = _enabled(wd, "wind")
     wd_nc = _file((wd or {}).get("netcdf"), name, "wind.netcdf")
+    wd_gp = _file((wd or {}).get("gpkg"), name, "wind.gpkg")
     nc_blk = (wd or {}).get("netcdf") or {}
-    for old in ("gpkg", "heights_above_surface"):
-        if (wd or {}).get(old) is not None:
-            notes.append(f"wind.{old} was removed in 0.29.0 - ignored.")
-    if wd_on and wd_nc:
+    gp_blk = (wd or {}).get("gpkg") or {}
+    if (wd or {}).get("heights_above_surface") is not None:
+        notes.append("wind.heights_above_surface was removed in 0.29.0 - "
+                     "ignored; the arrows use wind.netcdf.heights.")
+    for old in ("arrows_3d", "tilt_with_w"):
+        if gp_blk.get(old) is not None:
+            notes.append(f"wind.gpkg.{old} is ignored - the arrows are 3D "
+                         "along (u, v, w).")
+    if wd_on and (wd_nc or wd_gp):
+        # The heights serve both outputs; left out: every PALM level of
+        # the voxel's vertical range.
         grid_heights = nc_blk.get("heights")
         if grid_heights is not None:
-            # Left out: every PALM level of the voxel's vertical range.
             if not isinstance(grid_heights, (list, tuple)) or not grid_heights:
                 raise LayoutError(
                     "wind.netcdf.heights must list heights ABOVE SEA LEVEL "
@@ -512,17 +520,24 @@ def translate(user):
                                   "than once.")
         _number(nc_blk.get("every_nth_column"),
                 "wind.netcdf.every_nth_column", 1, integer=True)
+        _number(gp_blk.get("every_nth_column"),
+                "wind.gpkg.every_nth_column", 1, integer=True)
+        _number(gp_blk.get("arrow_length_per_ms"),
+                "wind.gpkg.arrow_length_per_ms", 0)
         if not data_3d:
             raise LayoutError("wind needs input.data_3d.")
         out["wind"] = {"enabled": True, "file_from": data_3d,
-                       "grid_to": wd_nc}
+                       "grid_to": wd_nc, "file_to": wd_gp}
         if grid_heights is not None:
             out["wind"]["grid_heights"] = [float(h) for h in grid_heights]
         _set(out, "wind", "grid_stride", nc_blk.get("every_nth_column"))
+        _set(out, "wind", "stride", gp_blk.get("every_nth_column"))
+        _set(out, "wind", "arrow_scale", gp_blk.get("arrow_length_per_ms"))
     else:
         out["wind"] = {"enabled": False}
         if wd_on:
-            notes.append("wind: no netcdf.file set - stage skipped.")
+            notes.append("wind: no netcdf.file or gpkg.file set - stage "
+                         "skipped.")
 
     # -- canopy --------------------------------------------------------------
     cn = user.get("canopy")
@@ -584,6 +599,8 @@ MESSAGE_NAMES = {
     "point file_from at": "point the input file at",
     "Point file_from at": "Point the input file at",
     "wind.grid_stride": "wind.netcdf.every_nth_column",
+    "wind.stride": "wind.gpkg.every_nth_column",
+    "wind.arrow_scale": "wind.gpkg.arrow_length_per_ms",
     "wind.grid_heights": "wind.netcdf.heights",
 }
 _MESSAGE_RE = re.compile(

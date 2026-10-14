@@ -222,6 +222,12 @@ DEFAULTS = {
         # renderer thins its own streamlines, and a 200x200x7x2 grid of
         # five float32 variables is about 11 MB.
         "grid_stride": 1,
+        # 3D arrows (LineStringZ) in a GeoPackage at the same absolute
+        # heights: from each kept column along (u, v, w), fields time, z,
+        # u, v, w, speed_3d. Columns in terrain / buildings get no arrow.
+        "file_to": None,           # output .gpkg (relative -> output_dir)
+        "stride": 1,               # arrows: keep every n-th grid column
+        "arrow_scale": 2.0,        # arrows: metres of arrow per m/s
     },
     # Write QGIS style sidecars (<layer>.qml, plus an embedded style in
     # each GeoPackage) so layers open with their time settings already
@@ -340,8 +346,7 @@ _REMOVED_KEYS = {
     "canopy": dict.fromkeys(("write_lai", "write_canopy_height",
                              "lad_threshold"), "0.19.0"),
     # The wind GeoPackage (points / 3D arrows above the surface).
-    "wind": dict.fromkeys(("file_to", "heights_agl", "stride",
-                           "write_lines_3d", "arrow_scale", "include_w"),
+    "wind": dict.fromkeys(("heights_agl", "write_lines_3d", "include_w"),
                           "0.29.0"),
 }
 
@@ -655,9 +660,14 @@ class Config:
             if not c["wind"]["file_from"]:
                 raise ConfigError("wind.file_from is required when "
                                   "wind.enabled: true.")
-            if not c["wind"]["grid_to"]:
-                raise ConfigError("wind: set grid_to (the NetCDF pattern) "
-                                  "when wind.enabled: true.")
+            if not (c["wind"]["grid_to"] or c["wind"]["file_to"]):
+                raise ConfigError("wind: set grid_to (netCDF), file_to "
+                                  "(arrows .gpkg) or both.")
+            sc = c["wind"]["arrow_scale"]
+            if (isinstance(sc, bool) or not isinstance(sc, (int, float))
+                    or sc <= 0):
+                raise ConfigError(f"wind.arrow_scale must be a positive "
+                                  f"number, got {sc!r}.")
             gh = c["wind"]["grid_heights"]
             if c["wind"]["grid_to"] and gh is not None:
                 # None: every PALM level of the voxel range.
@@ -675,10 +685,11 @@ class Config:
                 if len(set(float(h) for h in gh)) != len(gh):
                     raise ConfigError("wind.grid_heights lists a height "
                                       "more than once.")
-            v = c["wind"]["grid_stride"]
-            if not isinstance(v, int) or isinstance(v, bool) or v < 1:
-                raise ConfigError(f"wind.grid_stride must be a whole number "
-                                  f"of at least 1, got {v!r}.")
+            for key in ("grid_stride", "stride"):
+                v = c["wind"][key]
+                if not isinstance(v, int) or isinstance(v, bool) or v < 1:
+                    raise ConfigError(f"wind.{key} must be a whole number "
+                                      f"of at least 1, got {v!r}.")
         for key, val in (("project.overwrite", c["project"]["overwrite"]),
                          ("celsius", c["celsius"])):
             if not isinstance(val, bool):

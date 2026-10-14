@@ -15,10 +15,14 @@ from pathlib import Path
 import numpy as np
 from netCDF4 import Dataset
 
-from ..descriptions import long_name
+import geopandas as gpd
+from shapely.geometry import LineString
+
+from ..descriptions import long_name, write_gpkg_descriptions
 from ..log import debug, get_logger, info, stopwatch, warning
 from .georef import (check_product, check_raw_input, require_variables,
                      resolve_z_range, select_times)
+from .qgis_style import embed_gpkg_style, vector_qml, write_sidecar
 from .voxel import destagger, write_crs_var
 
 log = get_logger()
@@ -79,7 +83,39 @@ def _solid(nc, grid, it, k, mask_src, z_rel):
     return z_rel[k] < grid.elev
 
 
-def _wind_levels(cfg, grid, nc, its, times, z_rel):
+def _heights(cfg, grid, nc, z_rel):
+    """The absolute heights [m a.s.l.] both wind outputs sample:
+    wind.netcdf.heights, or every PALM level of the voxel's vertical
+    range - the same region.height_above_surface cut and the same k = 0
+    rule - so they sit exactly on the voxel file's z values."""
+    wd = cfg["wind"]
+    if wd["grid_heights"]:
+        return [float(h) for h in wd["grid_heights"]]
+    nz0, nzmax = resolve_z_range(nc, grid, "wind")
+    k_off = 1 if (cfg["voxel"].get("drop_k0", True) and nz0 == 0) else 0
+    heights = [float(h) for h in grid.abs_z(z_rel[nz0 + k_off:nzmax])]
+    info("[wind] every voxel level: {} heights, {:.1f} .. {:.1f} m",
+         len(heights), heights[0], heights[-1])
+    return heights
+
+
+def _sample(nc, grid, it, br, solid):
+    """u, v, w on the cut grid at one height (linear between the
+    bracketing levels), NaN where `solid` (terrain or building)."""
+    k0, k1, t = br
+    out = {}
+    for var in ("u", "v", "w"):
+        a = destagger(nc, var, it, k0, k0 + 1, grid.ny0, grid.nymax,
+                      grid.nx0, grid.nxmax)[0]
+        if k1 != k0:
+            b = destagger(nc, var, it, k1, k1 + 1, grid.ny0, grid.nymax,
+                          grid.nx0, grid.nxmax)[0]
+            a = (1.0 - t) * a + t * b
+        out[var] = np.where(solid, np.nan, a)
+    return out
+
+
+def _wind_levels(cfg, grid, nc, its, times, z_rel, heights):
     """One netCDF per ABSOLUTE height (m a.s.l.): (time, z, y, x) with u,
     v, w, speed and dir_met, z of length 1 holding that height.
 
@@ -97,18 +133,6 @@ def _wind_levels(cfg, grid, nc, its, times, z_rel):
     mask_src = next((c for c in ("theta", "ta", "q", "p", "rh")
                      if c in nc.variables), None)
     written = []
-
-    if wd["grid_heights"]:
-        heights = [float(h) for h in wd["grid_heights"]]
-    else:
-        # No list: every PALM level of the voxel's vertical range - the
-        # same region.height_above_surface cut and the same k = 0 rule -
-        # so these files sit exactly on the voxel file's z values.
-        nz0, nzmax = resolve_z_range(nc, grid, "wind")
-        k_off = 1 if (cfg["voxel"].get("drop_k0", True) and nz0 == 0) else 0
-        heights = [float(h) for h in grid.abs_z(z_rel[nz0 + k_off:nzmax])]
-        info("[wind] one file per voxel level: {} levels, {:.1f} .. {:.1f} m",
-             len(heights), heights[0], heights[-1])
 
     for z_abs in heights:
         path = cfg.out_path(level_path(wd["grid_to"], z_abs))
@@ -224,13 +248,104 @@ def _wind_levels(cfg, grid, nc, its, times, z_rel):
 
 
 # ------------------------------
+# 1b. 3D WIND ARROWS (GEOPACKAGE)
+# ------------------------------
+def _wind_arrows(cfg, grid, nc, its, times, z_rel, heights, path):
+    """3D arrows (LineStringZ) at the same absolute heights as the netCDF.
+
+    One arrow per kept grid column, height and record: it starts at the
+    cell centre at that height and points along (u, v, w), scaled by
+    wind.gpkg.arrow_length_per_ms. Built in PALM's CRS and transformed as
+    a whole into the output CRS (exact, z untouched), so it keeps its
+    metre length and points where the wind blows; the u / v attributes
+    are rotated into the output CRS's east / north. Columns inside
+    terrain or a building at that height get no arrow. Fields: time, z
+    (m a.s.l.), u, v, w, speed_3d. Written one record at a time.
+    """
+    wd = cfg["wind"]
+    sw = stopwatch()
+    stride = max(1, int(wd["stride"]))
+    scale = float(wd["arrow_scale"])
+    mask_src = next((c for c in ("theta", "ta", "q", "p", "rh")
+                     if c in nc.variables), None)
+    jj = np.arange(0, grid.nymax - grid.ny0, stride)
+    ii = np.arange(0, grid.nxmax - grid.nx0, stride)
+    jg, ig = np.meshgrid(jj, ii, indexing="ij")
+    jf, if_ = jg.ravel(), ig.ravel()
+    x_abs = grid.abs_x(grid.x_stat)[if_]
+    y_abs = grid.abs_y(grid.y_stat)[jf]
+
+    levels = []
+    for z_abs in heights:
+        br = _bracket(z_rel, z_abs - grid.origin_z)
+        if br is None:
+            continue
+        solid = _solid(nc, grid, its[0], br[0], mask_src, z_rel)
+        if br[1] != br[0]:
+            solid = solid | _solid(nc, grid, its[0], br[1], mask_src, z_rel)
+        keep = ~solid[jf, if_]
+        if keep.any():
+            levels.append((z_abs, br, solid, keep))
+    n_rows = sum(int(k.sum()) for *_x, k in levels) * len(its)
+    if not levels:
+        warning("[wind] no air cells at the wind heights - {} skipped.",
+                cfg.disp(path))
+        return
+    if n_rows > 2_000_000:
+        warning("[wind] {} will hold {} arrows - large; raise "
+                "every_nth_column.", cfg.disp(path), n_rows)
+
+    dts = grid.times_to_datetime(times)
+    dts_tz = grid.times_to_datetime(times, tz_aware=True)
+    if path.exists():
+        path.unlink()           # never append onto a previous run
+    for n, it in enumerate(its):
+        parts = []
+        for z_abs, br, solid, keep in levels:
+            c = _sample(nc, grid, it, br, solid)
+            j, i = jf[keep], if_[keep]
+            ug, vg, wv = c["u"][j, i], c["v"][j, i], c["w"][j, i]
+            u, v = grid.reproj.rotate_at(ug, vg, j, i)
+            x0, y0 = x_abs[keep], y_abs[keep]
+            z0 = np.full(x0.size, z_abs)
+            segs = [LineString([(a, b, h), (a + du * scale, b + dv * scale,
+                                            h + dw * scale)])
+                    for a, b, h, du, dv, dw
+                    in zip(x0, y0, z0, np.nan_to_num(ug), np.nan_to_num(vg),
+                           np.nan_to_num(wv))]
+            parts.append(gpd.GeoDataFrame(
+                {"time": [dts_tz[it]] * x0.size,
+                 "z": z0.astype("f4"),
+                 "u": u.astype("f4"), "v": v.astype("f4"),
+                 "w": wv.astype("f4"),
+                 "speed_3d": np.sqrt(u * u + v * v + wv * wv).astype("f4")},
+                geometry=grid.reproj.geoms(segs), crs=grid.reproj.crs))
+        frame = (parts[0] if len(parts) == 1
+                 else gpd.pd.concat(parts, ignore_index=True))
+        frame.to_file(path, layer="wind", driver="GPKG",
+                      mode="w" if n == 0 else "a")
+    write_gpkg_descriptions(path, "wind")
+    if cfg["qgis_styles"]:
+        from .surfaces import _median_step
+        qml = vector_qml("time", _median_step(dts, its), geom="line",
+                         clamp_absolute=bool(cfg["qgis_styles_3d"]))
+        write_sidecar(path, qml)
+        embed_gpkg_style(path, "wind", qml)
+    debug("[wind] {}: {} heights, every {} column(s), {} m per m/s",
+          cfg.disp(path), len(levels), stride, scale)
+    info("[wind] wrote {}: {} arrows in {}", cfg.disp(path), n_rows, sw)
+
+
+# ------------------------------
 # 2. STAGE ENTRY
 # ------------------------------
 def stage_wind(cfg, grid):
     wd = cfg["wind"]
     # One netCDF per absolute height; each is checked for existing output
     # on its own inside _wind_levels.
-    if not wd["grid_to"]:
+    arrows = cfg.out_path(wd["file_to"]) if wd["file_to"] else None
+    want_arrows = arrows is not None and cfg.prepare_output(arrows, "wind")
+    if not (wd["grid_to"] or want_arrows):
         return
 
     with Dataset(cfg.resolve(wd["file_from"]), "r") as nc:
@@ -244,4 +359,8 @@ def stage_wind(cfg, grid):
                  "outputs only the grouped u/v/w file has "
                  "(steps.splitvar.group_vars).")
         z = np.asarray(nc.variables["zu_3d"][:], dtype="f8")
-        _wind_levels(cfg, grid, nc, its, times, z)
+        heights = _heights(cfg, grid, nc, z)
+        if wd["grid_to"]:
+            _wind_levels(cfg, grid, nc, its, times, z, heights)
+        if want_arrows:
+            _wind_arrows(cfg, grid, nc, its, times, z, heights, arrows)

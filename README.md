@@ -33,7 +33,7 @@ Every run first reads the **static driver** (and optionally the `_p3d` namelist 
 |---|-------|------------------|
 | 1 | `voxel` | CF-compliant NetCDF for the ArcGIS Pro Voxel Layer — destaggered `u`/`v`/`w` plus chosen scalars on `(time, z, y, x)`, terrain and building cells as NoData |
 | 2 | `surfaces` | Every ground, roof and wall element as a time-enabled PolygonZ quad: GeoPackage (mainly QGIS) and File Geodatabase (local ArcGIS Pro); MultiPatch shapefile (web ArcGIS) |
-| 3 | `wind` | Gridded netCDF per absolute height with `u`, `v`, `w`, `speed`, `dir_met` per timestep, for ArcGIS Pro's flow / vector-field renderers — all heights in one folder |
+| 3 | `wind` | Gridded netCDF per absolute height with `u`, `v`, `w`, `speed`, `dir_met` per timestep, for ArcGIS Pro's flow / vector-field renderers — all heights in one folder; optionally 3D wind arrows in a GeoPackage at the same heights |
 | 4 | `canopy` | Plant canopy from the static driver: the LAD volume lifted onto absolute heights, as a voxel NetCDF |
 
 Each stage is enabled/disabled in its own config section; the order (and the default for `--stages`) is the `stages:` list.
@@ -113,6 +113,7 @@ Everything is written under `project.output_dir` (relative to `project.root`), w
 | `surfaces.all_elements_fgdb` (`.gdb`) | surfaces | **For local ArcGIS Pro.** File Geodatabase, feature classes `surfaces` and `walls`, the same elements as PolygonZ, one row per element per timestep. What ArcGIS opens natively, with real datetimes, full-length field names and NULLs — nothing is lost relative to the GeoPackage, and the time slider works on `time` |
 | `surfaces.all_elements_multipatch` (`.shp`) | surfaces | **For web ArcGIS.** The same elements as ESRI MultiPatch — what a 3D object scene layer is published from (ArcGIS Pro: Share → Web Layer, or Create 3D Object Scene Layer Content). One feature per element instead of one per element per timestep; each variable and record is its own field. See below |
 | `wind.netcdf` | wind | **One file per absolute height** (m a.s.l.): every level of the voxel's range by default, or those in `wind.netcdf.heights`, `(time, z, y, x)` with `u`, `v`, `w`, `speed`, `dir_met`, for ArcGIS Pro's **flow / vector-field** renderers; collected in one folder named after the file, `<file>/<file>_z<height>m.nc` (or put `{z}` in the name). A height between two PALM levels is interpolated linearly; cells where either level is inside terrain or a building are NoData. See the recipe below |
+| `wind.gpkg` | wind | **3D wind arrows**, layer `wind`: LineStringZ from each grid column along (u, v, w) at the same absolute heights as `wind.netcdf`, with `time`, `z`, `u`, `v`, `w`, `speed_3d`. Readable in a 3D scene (QGIS 3D view, ArcGIS Pro local scene); the time slider steps through the records. See below |
 
 Because the style is stored inside each GeoPackage, those files contain a second, non-spatial `layer_styles` table. QGIS hides it automatically, but when reading a GeoPackage in your own scripts, name the layer explicitly — `gpd.read_file(path, layer="surfaces")` — or GeoPandas/pyogrio warns about the ambiguity. Set `advanced.qgis.styles: false` if you would rather have single-layer files.
 
@@ -183,6 +184,8 @@ wind:
     netcdf:
         file: '{name}_wind.nc'            # -> {name}_wind/{name}_wind_z200m.nc, ...
         #heights: [200.0, 210.0]          # m a.s.l.; default: voxel levels
+    gpkg:
+        file: '{name}_wind.gpkg'          # 3D arrows at the same heights
 ```
 
 A stage runs when its section is present; `enabled: false` switches it off without deleting its settings. Rarely needed settings (`nz`/`dz` without a p3d, `origin_z`, `surface_pressure`, `qgis_styles`, record-index time selection, ...) sit in an `advanced` block.
@@ -266,7 +269,7 @@ The two names are different quantities, and only one of them is an air temperatu
 
 **Gridded netCDF (`wind.netcdf`).** One file per **absolute height** — metres above sea level, the same z as the voxel file, not heights above the ground. By default the heights are the voxel's own levels: every PALM level from the bottom of the cut up to `region.height_above_surface` above the highest surface (the voxel's k = 0 rule included), so each wind file lies exactly on one voxel z. `wind.netcdf.heights` lists specific heights instead. Each file is `(time, z, y, x)` with `z` of length 1 holding that height, all selected records on the time axis, and `u`, `v`, `w`, `speed` (horizontal) and `dir_met`. A listed height that falls between two PALM levels is interpolated linearly between them, so the file holds the wind at exactly that height; a cell is NoData where either of the two levels is inside terrain or a building. A height outside the file's levels is skipped with a warning. All files go into one folder named after `file` without its extension — `{name}_wind.nc` writes `{name}_wind/{name}_wind_z<height>m.nc` — so a run with several dozen levels leaves the output directory tidy. Put `{z}` in `file` to place the height in the name yourself (`{name}_wind_{z}m.nc` → `{name}_wind/{name}_wind_200m.nc`).
 
-The point / 3D-arrow GeoPackage (`wind.gpkg`) was removed in 0.29.0: the flow renderer draws its own arrows and streamlines from the netCDF. A config that still has `wind.gpkg` or `wind.heights_above_surface` runs, and the run notes that they are ignored.
+**3D arrows (`wind.gpkg`).** One arrow per grid column (`every_nth_column` thins them), height and record, at the same absolute heights as the netCDF — `wind.netcdf.heights`, or every voxel level, also when `wind.netcdf.file` is null. Each arrow starts at the cell centre at that height and points along (u, v, w), `arrow_length_per_ms` metres per m/s (default 2). Columns inside terrain or a building at that height get no arrow. Fields: `time`, `z` (m a.s.l.), `u`, `v`, `w` and `speed_3d` = √(u² + v² + w²). The arrow is built in PALM's grid and transformed exactly into `project.output_crs`, so it keeps its metre length; `u` and `v` are turned to that CRS's east and north. At full resolution the layer has columns × heights × records arrows (a 1 m grid gives one per square metre per height per record) and the run warns above two million — raise `every_nth_column` for overviews. `wind.heights_above_surface` (the heights above the ground of the pre-0.29 layer) and `gpkg.arrows_3d` / `gpkg.tilt_with_w` are ignored with a note.
 
 ---
 
