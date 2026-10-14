@@ -121,8 +121,8 @@ def output_vars(sf, available=None, verbose=False):
     native = next((a for a in SURF_ACTUAL_NATIVE if a in have), None)
     if native:
         if verbose:
-            info("[surfaces] the file holds '{}' - using PALM's own "
-                 "surface temperature instead of deriving it.", native)
+            info("[surfaces] the file holds '{}' - using PALM's own.",
+                 native)
         out.append((SURF_ACTUAL, native, False))
         return out
 
@@ -312,8 +312,8 @@ def _elements_fgdb(cfg, grid, nc, its, times, xs, ys, zs, zen, az, idx,
                                         zs, zen, az, idx):
         write_with_aliases(frame, path, "OpenFileGDB", layer,
                            append=(n > 0))
-    info("[surfaces] wrote {}: feature class '{}', {} elements x {} times "
-         "in {}", cfg.disp(path), layer, idx.size, len(its), sw)
+    info("[surfaces] wrote {} ({}): {} x {} records in {}", cfg.disp(path),
+         layer, idx.size, len(its), sw)
 
 
 # ------------------------------
@@ -354,10 +354,8 @@ def _check_multipatch_fields(n_vars, n_records):
     n_fields = _MP_FIXED_FIELDS + n_vars * n_records
     if n_fields > _DBF_FIELDS_MAX:
         raise ValueError(
-            "surfaces.all_elements_multipatch: {} variables x {} records "
-            "= {} fields, above the shapefile's {} - narrow the time "
-            "window or the variable list.".format(
-                n_vars, n_records, n_fields, _DBF_FIELDS_MAX))
+            "MultiPatch needs {} fields, a shapefile holds {} - narrow "
+            "time or variables.".format(n_fields, _DBF_FIELDS_MAX))
 
 
 def _elements_multipatch(cfg, grid, nc, its, times, xs, ys, zs, zen, az,
@@ -427,9 +425,10 @@ def _elements_multipatch(cfg, grid, nc, its, times, xs, ys, zs, zen, az,
             f.write("{},{},{},{}\n".format(*row))
     for field, name, stamp, _it in rows[:len(plan)]:
         debug("[surfaces] {}: {} at {}", field, name, stamp)
-    info("[surfaces] wrote {}: {} elements as MultiPatch, {} fields each "
-         "({} variables x {} records; map in {}) in {}", cfg.disp(path),
-         idx.size, len(rows), len(plan), len(its), fmap.name, sw)
+    debug("[surfaces] {}: {} variables x {} records as fields, map in {}",
+          cfg.disp(path), len(plan), len(its), fmap.name)
+    info("[surfaces] wrote {}: {} x {} fields in {}", cfg.disp(path),
+         idx.size, len(rows), sw)
 
 
 def _elements_gpkg(cfg, grid, nc, its, times, xs, ys, zs, zen, az, sel,
@@ -537,9 +536,10 @@ def _elements_gpkg(cfg, grid, nc, its, times, xs, ys, zs, zen, az, sel,
         embed_gpkg_style(path, layer, qml)
 
     counts = gpd.pd.Series(orient).value_counts().to_dict()
-    info("[surfaces] wrote {}: {} elements x {} times ({}) in {}",
-         cfg.disp(path), idx.size, len(its),
-         ", ".join(f"{k} {v}" for k, v in sorted(counts.items())), sw)
+    debug("[surfaces] {}: {}", cfg.disp(path),
+          ", ".join(f"{k} {v}" for k, v in sorted(counts.items())))
+    info("[surfaces] wrote {}: {} x {} records in {}", cfg.disp(path),
+         idx.size, len(its), sw)
 
 
 def _all_elements_gpkg(cfg, grid, nc, its, times, xs, ys, zs, zen, az, sel,

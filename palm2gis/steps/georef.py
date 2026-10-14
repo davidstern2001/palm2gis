@@ -307,9 +307,8 @@ def resolve_basic_state(cfg, p3d):
             p_s, p_src = P_SURFACE_DEFAULT, "PALM's default"
             # A wrong value shifts derived ta / t_surface / ah by about
             # 0.85 K / 1 % per 10 hPa.
-            warning("[static] surface_pressure not found - assuming PALM's "
-                    "default {:.2f} hPa; set it in the config if the run "
-                    "differs.", p_s / 100.0)
+            warning("[static] surface_pressure not found - PALM's default "
+                    "{:.2f} hPa assumed.", p_s / 100.0)
 
     # -- reference potential temperature -------------------------------------
     if explicit["pt_surface"]:
@@ -324,14 +323,14 @@ def resolve_basic_state(cfg, p3d):
         th, th_src = PT_SURFACE_DEFAULT, "PALM's default"
         # A wrong value drifts derived ta / t_surface by about 0.1 K per km
         # per 10 K of error.
-        warning("[static] pt_surface not found - assuming PALM's default "
-                "{:.0f} K; set it in the config if the run differs.", th)
+        warning("[static] pt_surface not found - PALM's default {:.0f} K "
+                "assumed.", th)
 
     cfg.set_basic_state(p_s, th)
-    info("[static] basic state{}: surface_pressure {:.2f} hPa ({}), "
-         "pt_surface {:.2f} K ({})",
-         " of child {}".format(child) if child else "", p_s / 100.0, p_src,
-         th, th_src)
+    info("[static] basic state{}: {:.2f} hPa, {:.2f} K",
+         " of child {}".format(child) if child else "", p_s / 100.0, th)
+    debug("[static] surface_pressure from {}, pt_surface from {}", p_src,
+          th_src)
     calibrate_basic_state(cfg, explicit)
 
 
@@ -411,14 +410,15 @@ def calibrate_basic_state(cfg, explicit=None):
               p_fit / 100.0, th_fit, resid)
         return
     if explicit["surface_pressure"] or explicit["pt_surface"]:
-        warning("[static] configured basic state ({:.2f} hPa, {:.2f} K) is "
-                "up to {:.2f} K off {} ({:.2f} hPa, {:.2f} K) - kept; remove "
-                "it to use PALM's.", p_s / 100.0, th, dT, cfg_disp_path(path),
-                p_fit / 100.0, th_fit)
+        warning("[static] configured basic state is up to {:.2f} K off {} "
+                "- kept; remove it to use PALM's.", dT, cfg_disp_path(path))
+        debug("[static] configured {:.2f} hPa, {:.2f} K; file fits "
+              "{:.2f} hPa, {:.2f} K", p_s / 100.0, th, p_fit / 100.0,
+              th_fit)
         return
-    warning("[static] basic state ({:.2f} hPa, {:.2f} K) is up to {:.2f} K "
-            "off {} - using its fit ({:.2f} hPa, {:.2f} K).", p_s / 100.0, th,
-            dT, cfg_disp_path(path), p_fit / 100.0, th_fit)
+    warning("[static] basic state is up to {:.2f} K off {} - using its "
+            "fit ({:.2f} hPa, {:.2f} K).", dT, cfg_disp_path(path),
+            p_fit / 100.0, th_fit)
     debug("[static] fit residual {:.4f} K", resid)
     cfg.set_basic_state(p_fit, th_fit)
 
@@ -516,9 +516,8 @@ def process_static_driver(cfg):
     g.reproj = Reprojection(g, cfg["crs"].get("output"),
                             cfg["crs"].get("resampling") or "conservative")
     if not g.reproj.identity:
-        info("[static] output CRS {} - vector layers transformed, gridded "
-             "netCDF resampled ({}).", g.reproj.crs.name,
-             g.reproj.method)
+        info("[static] output CRS {} (grids resampled: {})",
+             g.reproj.crs.name, g.reproj.method)
 
     info("[static] {} x {} x {} pts, d = {}/{}/{} m, origin "
          "({:.2f}, {:.2f})", g.nx, g.ny, g.nz, g.dx, g.dy, g.dz,
@@ -772,14 +771,14 @@ def select_times(cfg, nc, tag="", grid=None, source=""):
             origin = ("the p3d ({} = {:g} s)".format(src_key, step)
                       if src_key else
                       "bounds.time_start/time_step")
-            warning("{}time variable is all fill - rebuilt from {}: start "
-                    "{:g} s, every {:g} s.",
-                    label, origin, start, step)
+            warning("{}time variable is all fill - rebuilt, every {:g} s.",
+                    label, step)
+            debug("{}time rebuilt from {}: start {:g} s, every {:g} s.",
+                  label, origin, start, step)
         else:
             times = np.full(n_all, np.nan)
-            warning("{}time variable is all fill and no output interval is "
-                    "known - using record indices (set bounds.time_step).",
-                    label)
+            warning("{}time variable is all fill - using record indices "
+                    "(set bounds.time_step).", label)
         good = np.ones(n_all, dtype=bool)
         n_valid = n_all
     else:
@@ -988,14 +987,12 @@ def regularize_times(times, its, grid=None, tag="", source=""):
                   label, step, origin, resid)
         gaps = np.flatnonzero(np.diff(n) != 1)
         if gaps.size:
-            warning("{}{} gap(s) in the records (e.g. {:g} -> {:g} s, "
-                    "interval {:g} s) - ArcGIS Pro sees an irregular time "
-                    "axis.", label, gaps.size,
-                    snapped[gaps[0]], snapped[gaps[0] + 1], step)
+            warning("{}{} gap(s) in the records (e.g. {:g} -> {:g} s): "
+                    "irregular time axis.", label, gaps.size,
+                    snapped[gaps[0]], snapped[gaps[0] + 1])
         return times
 
-    warning("{}record times are irregular (steps {:g} .. {:g} s) - ArcGIS "
-            "Pro sees an irregular time axis.", label,
+    warning("{}record times are irregular (steps {:g} .. {:g} s).", label,
             float(d.min()) if d.size else 0.0,
             float(d.max()) if d.size else 0.0)
     return times

@@ -307,7 +307,7 @@ def _migrate_renamed_keys(user):
     if isinstance(sf, dict) and isinstance(sf.get("variables"), list) \
             and "t_surf" in sf["variables"]:
         warning("[config] surfaces.variables: 't_surf' is now 't_surface' "
-                "- the old name still works for now.")
+                "(old name still works).")
         sf["variables"] = ["t_surface" if v == "t_surf" else v
                            for v in sf["variables"]]
     for section, renames in _RENAMED_KEYS.items():
@@ -321,8 +321,8 @@ def _migrate_renamed_keys(user):
                 warning("[config] {}.{} and {}.{} are both set - using "
                         "{}.{}.", section, old, section, new, section, new)
             else:
-                warning("[config] {}.{} is now {}.{} - the old name still "
-                        "works for now.", section, old, section, new)
+                warning("[config] {}.{} is now {}.{} (old name still works).",
+                        section, old, section, new)
                 block[new] = block[old]
             block.pop(old)
 

@@ -256,8 +256,7 @@ def _advanced(user, notes):
                 out[internal] = adv[flat]
                 where[internal] = f"advanced.{flat}"
                 notes.append(f"advanced.{flat} is now "
-                             f"advanced.{group}.{key} - the old name still "
-                             f"works for now.")
+                             f"advanced.{group}.{key} (old name works).")
             val = (adv.get(group) or {}).get(key)
             if val is not None:
                 out[internal] = val
@@ -272,8 +271,8 @@ def _advanced(user, notes):
 def _units(user, adv, where, notes):
     """advanced.units -> the internal `celsius` flag."""
     if user.get("celsius") is not None:
-        notes.append("celsius is now advanced.units.temperature (C or K) "
-                     "- the old name still works for now.")
+        notes.append("celsius is now advanced.units.temperature (old name "
+                     "still works).")
         return _bool(user["celsius"], "celsius")
     scale = adv.get("units_temperature")
     pot = adv.get("units_potential_temperature")
@@ -300,8 +299,8 @@ def _time_window(user, reg, notes):
     out = {"time_from": blk.get("from"), "time_to": blk.get("to")}
     for old, new in (("time_from", "from"), ("time_to", "to")):
         if reg.get(old) is not None:
-            notes.append(f"region.{old} is now time.{new} - the old name "
-                         f"still works for now.")
+            notes.append(f"region.{old} is now time.{new} (old name still "
+                         f"works).")
             if out[old] is None:
                 out[old] = reg[old]
     return out
@@ -313,8 +312,7 @@ def _height(reg, notes):
     old = reg.get("height_above_highest_surface")
     if old is not None:
         notes.append("region.height_above_highest_surface is now "
-                     "region.height_above_surface - the old name still "
-                     "works for now.")
+                     "region.height_above_surface.")
         if val is None:
             val = old
     return _number(val, "region.height_above_surface", 0)
@@ -451,8 +449,7 @@ def translate(user):
     if (adv_raw.get("shapefile") is not None
             or adv_raw.get("multipatch_split") is not None):
         notes.append("advanced.shapefile.multipatch_split was removed in "
-                     "0.30.0 and is ignored - surfaces.all_elements_"
-                     "multipatch is one file with the records as fields.")
+                     "0.30.0 - ignored.")
     if sf_on and any(sf_files.values()):
         variables = _names(sf.get("variables"), "surfaces.variables")
         if not variables:
@@ -495,9 +492,7 @@ def translate(user):
     nc_blk = (wd or {}).get("netcdf") or {}
     for old in ("gpkg", "heights_above_surface"):
         if (wd or {}).get(old) is not None:
-            notes.append(f"wind.{old} was removed in 0.29.0 (the wind "
-                         "GeoPackage) and is ignored - the wind output is "
-                         "the netCDF per height.")
+            notes.append(f"wind.{old} was removed in 0.29.0 - ignored.")
     if wd_on and wd_nc:
         grid_heights = nc_blk.get("heights")
         if grid_heights is not None:

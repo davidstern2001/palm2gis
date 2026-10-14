@@ -434,15 +434,17 @@ class Reprojection:
             covered = weights[1].sum(axis=1) >= 0.5 * weights[2]
             valid = valid | covered.reshape(valid.shape)
 
-        info("[proj] {} grid: {} x {} cells of {:.3g} x {:.3g} {}, "
-             "{} from {} x {} PALM columns{} "
-             "({:.0f} % outside the domain, NoData)",
-             self.crs.name, nX, nY, dX, dY,
-             "deg" if self.geographic else self.linear_units,
-             "conservative (area-weighted)" if weights is not None
-             else "nearest neighbour",
-             nx, ny, " (every {})".format(stride) if stride > 1 else "",
-             100.0 * (1.0 - valid.mean()))
+        info("[proj] output grid {} x {}, {:.0f} % outside the domain",
+             nX, nY, 100.0 * (1.0 - valid.mean()))
+        debug("[proj] {} grid: {} x {} cells of {:.3g} x {:.3g} {}, "
+              "{} from {} x {} PALM columns{} "
+              "({:.0f} % outside the domain, NoData)",
+              self.crs.name, nX, nY, dX, dY,
+              "deg" if self.geographic else self.linear_units,
+              "conservative (area-weighted)" if weights is not None
+              else "nearest neighbour",
+              nx, ny, " (every {})".format(stride) if stride > 1 else "",
+              100.0 * (1.0 - valid.mean()))
         return OutputGrid(self, X, Y, jj, ii, valid, stride,
                           method=self.method, weights=weights)
 

@@ -107,8 +107,7 @@ def _wind_levels(cfg, grid, nc, its, times, z_rel):
         nz0, nzmax = resolve_z_range(nc, grid, "wind")
         k_off = 1 if (cfg["voxel"].get("drop_k0", True) and nz0 == 0) else 0
         heights = [float(h) for h in grid.abs_z(z_rel[nz0 + k_off:nzmax])]
-        info("[wind] no wind.netcdf.heights - one file per PALM level of "
-             "the voxel range: {} levels, {:.2f} .. {:.2f} m a.s.l.",
+        info("[wind] one file per voxel level: {} levels, {:.1f} .. {:.1f} m",
              len(heights), heights[0], heights[-1])
 
     for z_abs in heights:
@@ -119,10 +118,9 @@ def _wind_levels(cfg, grid, nc, its, times, z_rel):
         target = z_abs - grid.origin_z          # PALM's relative height
         br = _bracket(z_rel, target)
         if br is None:
-            warning("[wind] {:g} m a.s.l. is outside the file's levels "
-                    "({:.2f} .. {:.2f} m a.s.l.) - {} skipped.", z_abs,
-                    float(grid.abs_z(z_rel[0])), float(grid.abs_z(z_rel[-1])),
-                    path.name)
+            warning("[wind] {:g} m is outside the file's levels "
+                    "({:.1f} .. {:.1f} m) - skipped.", z_abs,
+                    float(grid.abs_z(z_rel[0])), float(grid.abs_z(z_rel[-1])))
             continue
         k0, k1, t = br
         solid = _solid(nc, grid, its[0], k0, mask_src, z_rel)
@@ -215,9 +213,10 @@ def _wind_levels(cfg, grid, nc, its, times, z_rel):
                     fout.variables[name][q, 0, ...] = arr
 
         written.append(path)
-        info("[wind] wrote {}: {} x {} x {} (t,{},{}) at {:g} m a.s.l., "
-             "u, v, w, speed, dir_met in {}", cfg.disp(path), len(its),
-             og.shape[0], og.shape[1], yd, xd, z_abs, sw)
+        debug("[wind] {}: {} x {} x {} (t,{},{}) at {:g} m a.s.l., u, v, w, "
+              "speed, dir_met", cfg.disp(path), len(its), og.shape[0],
+              og.shape[1], yd, xd, z_abs)
+        info("[wind] wrote {} in {}", cfg.disp(path), sw)
     if written:
         debug("[wind] ArcGIS Pro: Add Multidimensional Raster Layer as a "
               "Vector Field")

@@ -94,9 +94,10 @@ def voxel_statistics(fout, names, n_rec, ranges, fill):
             "cells".format(DISPLAY[0], DISPLAY[1], n_rec))
         stats[var] = dict(units=units, min=lo, max=hi, pct=pct,
                           edges=edges, counts=counts)
-        info("[voxel] {}: suggested Min/Max (p{}..p{}) {:.4g} .. {:.4g} {}"
-             " (full range {:.4g} .. {:.4g})", var, DISPLAY[0], DISPLAY[1],
-             pct[DISPLAY[0]], pct[DISPLAY[1]], units, lo, hi)
+        info("[voxel] {}: suggested Min/Max {:.4g} .. {:.4g} {}", var,
+             pct[DISPLAY[0]], pct[DISPLAY[1]], units)
+        debug("[voxel] {}: Min/Max = p{} .. p{}; full range {:.4g} .. {:.4g}",
+              var, DISPLAY[0], DISPLAY[1], lo, hi)
     return stats
 
 

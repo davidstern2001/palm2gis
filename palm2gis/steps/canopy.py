@@ -215,7 +215,8 @@ def stage_canopy(cfg, grid):
                            valid=np.ones(cut.shape, dtype=bool))
             ov[0] = np.where(dens > 0, dens, FILL)
 
-    info("[canopy] wrote {}: 1 x {} x {} x {} (t,z,{},{}), {} at {}, "
-         "{} canopy cells in {}",
-         cfg.disp(path), z_out.size, og.shape[0], og.shape[1], yd, xd, ", ".join(sorted(vols)),
-         t_label, int((lad_cut > 0).sum()), sw)
+    debug("[canopy] {}: 1 x {} x {} x {} (t,z,{},{}), {} at {}",
+          cfg.disp(path), z_out.size, og.shape[0], og.shape[1], yd, xd,
+          ", ".join(sorted(vols)), t_label)
+    info("[canopy] wrote {}: {} canopy cells in {}", cfg.disp(path),
+         int((lad_cut > 0).sum()), sw)

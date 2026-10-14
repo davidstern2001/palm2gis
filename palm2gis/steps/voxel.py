@@ -223,8 +223,7 @@ def stage_voxel(cfg, grid):
         derive_ta = False
         if vx["derive_ta"] and "ta" not in scalars:
             if "ta" in nc.variables:
-                info("[voxel] the file holds 'ta' - using PALM's own air "
-                     "temperature instead of deriving it.")
+                info("[voxel] the file holds 'ta' - using PALM's own.")
                 scalars = scalars + ["ta"]
             elif "theta" in nc.variables:
                 derive_ta = True
@@ -242,8 +241,7 @@ def stage_voxel(cfg, grid):
         ah_temp = None
         if vx["derive_ah"] and "ah" not in scalars:
             if "ah" in nc.variables:
-                info("[voxel] the file holds 'ah' - using PALM's own "
-                     "absolute humidity instead of deriving it.")
+                info("[voxel] the file holds 'ah' - using PALM's own.")
                 scalars = scalars + ["ah"]
             elif "q" not in nc.variables:
                 require_variables(
@@ -254,8 +252,8 @@ def stage_voxel(cfg, grid):
             elif "ta" in nc.variables or "theta" in nc.variables:
                 derive_ah = True
                 ah_temp = "ta" if "ta" in nc.variables else "theta"
-                info("[voxel] no 'ah' in the file - deriving it from 'q', "
-                     "with the air temperature from '{}'.", ah_temp)
+                info("[voxel] no 'ah' in the file - deriving it from 'q' "
+                     "and '{}'.", ah_temp)
             else:
                 require_variables(
                     nc, ["ta"], "voxel", vx["file_from"],
@@ -605,6 +603,8 @@ def stage_voxel(cfg, grid):
     for p in write_sidecars(stats, file_to, len(its)):
         info("[voxel] wrote {}", cfg.disp(p))
 
-    info("[voxel] wrote {}: {} x {} x {} x {} (t,z,{},{}), {} in {}",
-         cfg.disp(file_to), len(its), z_out.size, og.shape[0], og.shape[1],
-         yd, xd, ", ".join(out_vars), sw)
+    debug("[voxel] {}: {} x {} x {} x {} (t,z,{},{}), {}",
+          cfg.disp(file_to), len(its), z_out.size, og.shape[0], og.shape[1],
+          yd, xd, ", ".join(out_vars))
+    info("[voxel] wrote {}: {} variables in {}", cfg.disp(file_to),
+         len(out_vars), sw)

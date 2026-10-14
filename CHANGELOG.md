@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.33.1
+
+**Shorter log lines**
+
+- Normal log lines fit one line again: "wrote ..." lines give the file,
+  a count and the time ("[wind] wrote x_wind/x_wind_z180m.nc in 0.4 s");
+  array shapes, variable lists, orientation counts, the field map,
+  the sources of the basic state, the full value range and the
+  resampling details moved to debug (`-v`).
+- Warnings and config notes shortened the same way ("... (old name
+  still works)", "wind.gpkg was removed in 0.29.0 - ignored.").
+
 ## 0.33.0
 
 **Run time per output in the log**
