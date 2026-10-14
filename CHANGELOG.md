@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.35.1
+
+- README, Origins and attribution: palm2gis "grew out of" `paraview_vis`
+  rather than being "derived from" it. The section lists what comes from
+  Martin Bureš's work (the georeferencing approach, the shape of the 3D
+  conversion, the surface-quad reconstruction, the configuration
+  concepts, several internal names) and states that the implementation
+  is new, with no code carried over.
+
 ## 0.35.0
 
 **3D wind arrows in a GeoPackage** *(new output)*

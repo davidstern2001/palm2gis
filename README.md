@@ -317,20 +317,22 @@ Since 0.10.0 the skip is no longer by file existence alone. A `.palm2gis_state.j
 
 ## Origins and attribution
 
-`palm2gis` is derived from `paraview_vis`, a PALM visualisation script by
-[Martin Bureš](https://www.cs.cas.cz/staff/buresm/en) at the Institute of
-Computer Science of the Czech Academy of Sciences. The domain-georeferencing
-approach and the general shape of the 3D conversion come from that work, as do
-the configuration concepts this tool kept (the domain, the subdomain
-cut, the timestep window). The logging style follows PALM-GeM's (Martin Bureš,
-Jaroslav Rešler).
+`palm2gis` grew out of `paraview_vis`, a PALM visualisation script for
+ParaView by [Martin Bureš](https://www.cs.cas.cz/staff/buresm/en) (Institute
+of Computer Science of the Czech Academy of Sciences). From that work come the
+approach to georeferencing the domain from the static driver, the shape of the
+3D conversion (cutting a subdomain and moving the staggered velocities to cell
+centres), the reconstruction of surface quads from each element's zenith and
+azimuth, the configuration concepts (domain, subdomain cut, timestep window)
+and several internal names. The logging style follows PALM-GeM's (Martin
+Bureš, Jaroslav Rešler).
 
-The code has since been restructured into a configurable, stage-based pipeline
-writing GIS-native formats rather than ParaView-oriented ones. One behavioural
-difference matters for anyone holding older results: the destaggering has been
-corrected, and interpolated NetCDFs produced by the earlier script carry
-incorrect velocities — see [Things worth knowing](#things-worth-knowing) for
-the detail.
+The implementation is new: no code from `paraview_vis` is carried over, and
+palm2gis writes GIS-native formats through a configurable, stage-based
+pipeline. One behavioural difference matters for anyone holding older results:
+the destaggering has been corrected, and interpolated NetCDFs produced by the
+earlier script carry incorrect velocities — see
+[Things worth knowing](#things-worth-knowing).
 
 ## Authors
 
