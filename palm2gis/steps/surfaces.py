@@ -342,6 +342,23 @@ def _short_codes(names, width):
     return out
 
 
+_MP_FIXED_FIELDS = 5      # elem_id, orient, azimuth, z, z_agl
+
+
+def _check_multipatch_fields(n_vars, n_records):
+    """Raise before anything is written when the MultiPatch would need
+    more fields than a shapefile holds. Checked at the start of the
+    stage, so a long run does not write the GeoPackage and the
+    geodatabase first and fail only at the shapefile."""
+    n_fields = _MP_FIXED_FIELDS + n_vars * n_records
+    if n_fields > _DBF_FIELDS_MAX:
+        raise ValueError(
+            "surfaces.all_elements_multipatch: {} variables x {} records "
+            "= {} fields, above the shapefile's {} - narrow the time "
+            "window or the variable list.".format(
+                n_vars, n_records, n_fields, _DBF_FIELDS_MAX))
+
+
 def _elements_multipatch(cfg, grid, nc, its, times, xs, ys, zs, zen, az,
                          idx, path):
     """Elements as MultiPatch, one feature each, one field per record.
@@ -358,15 +375,7 @@ def _elements_multipatch(cfg, grid, nc, its, times, xs, ys, zs, zen, az,
                 cfg.disp(path))
         return
     plan = list(output_vars(sf, nc.variables))
-    n_fixed = 5
-    n_fields = n_fixed + len(plan) * len(its)
-    if n_fields > _DBF_FIELDS_MAX:
-        raise ValueError(
-            "surfaces.all_elements_multipatch: {} variables x {} records "
-            "= {} "
-            "fields, above the shapefile's {} - narrow the time window or "
-            "the variable list.".format(len(plan), len(its), n_fields,
-                                        _DBF_FIELDS_MAX))
+    _check_multipatch_fields(len(plan), len(its))
     digits = max(3, len(str(len(its) - 1)))
     codes = _short_codes([name for name, _v, _d in plan],
                          _DBF_NAME_MAX - 1 - digits)
@@ -581,6 +590,8 @@ def stage_surfaces(cfg, grid):
 
     with Dataset(cfg.resolve(sf["file_from"]), "r") as nc:
         its, times = select_times(cfg, nc, "surfaces", grid, cfg["surfaces"]["file_from"])
+        if do_mp:
+            _check_multipatch_fields(len(plan), len(its))
         xs, ys, zs, zen, az = _load_geometry(nc)
         sel = _bounds_mask(cfg, xs, ys)
 

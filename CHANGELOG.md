@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.32.1
+
+- `surfaces.all_elements_multipatch`: the shapefile's 255-field limit
+  (variables x records + 5) is checked at the start of the surfaces
+  stage. It used to be checked only when the shapefile was written, so
+  a long run wrote the GeoPackage and the geodatabase first and then
+  failed.
+
 ## 0.32.0
 
 **The web MultiPatch holds every element** *(changes 0.31.0's output)*

@@ -771,6 +771,22 @@ def verify_regressions(tmp, out, pipeline_main):
     check(ok, "multipatch: values match the geodatabase per record",
           failures)
 
+    # too many fields: the run stops BEFORE writing the other products
+    import palm2gis.steps.surfaces as _sfmod
+    wide = tmp / "config_mp_wide.yaml"
+    wide.write_text((tmp / "config.yaml").read_text()
+                    .replace("output_dir: ./out", "output_dir: ./out_mp_wide"))
+    saved = _sfmod._DBF_FIELDS_MAX
+    _sfmod._DBF_FIELDS_MAX = _sfmod._MP_FIXED_FIELDS + 2 * NT - 1
+    try:
+        rc = pipeline_main(["-c", str(wide), "--stages", "surfaces"])
+    finally:
+        _sfmod._DBF_FIELDS_MAX = saved
+    check(rc == 1 and not (tmp / "out_mp_wide" / "test_surfaces.gpkg")
+          .exists(),
+          "multipatch: too many fields stop the run before the GeoPackage "
+          "is written", failures)
+
     # -- file geodatabase --------------------------------------------------
     gdb = out / "test_surfaces.gdb"
     layers = {l[0] for l in pyogrio.list_layers(gdb)}
