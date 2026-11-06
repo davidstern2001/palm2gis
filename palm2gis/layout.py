@@ -40,7 +40,7 @@ SCHEMA = {
                  "all_elements_multipatch": _OUT_FILE},
     "wind": {"enabled": None,
              "netcdf": {"file": None, "heights": None,
-                        "every_nth_column": None},
+                        "every_nth_column": None, "per_height": None},
              "gpkg": {"file": None, "every_nth_column": None,
                       "arrow_length_per_ms": None,
                       # pre-0.35, ignored with a note:
@@ -531,6 +531,8 @@ def translate(user):
         if grid_heights is not None:
             out["wind"]["grid_heights"] = [float(h) for h in grid_heights]
         _set(out, "wind", "grid_stride", nc_blk.get("every_nth_column"))
+        _set(out, "wind", "grid_per_height",
+             _bool(nc_blk.get("per_height"), "wind.netcdf.per_height"))
         _set(out, "wind", "stride", gp_blk.get("every_nth_column"))
         _set(out, "wind", "arrow_scale", gp_blk.get("arrow_length_per_ms"))
     else:
@@ -602,6 +604,7 @@ MESSAGE_NAMES = {
     "wind.stride": "wind.gpkg.every_nth_column",
     "wind.arrow_scale": "wind.gpkg.arrow_length_per_ms",
     "wind.grid_heights": "wind.netcdf.heights",
+    "wind.grid_per_height": "wind.netcdf.per_height",
 }
 _MESSAGE_RE = re.compile(
     r"(?<![\w.])(" + "|".join(re.escape(k) for k in

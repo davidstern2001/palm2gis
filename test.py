@@ -235,6 +235,7 @@ wind:
   enabled: true
   file_from: test_3d
   grid_to: test_wind.nc
+  grid_per_height: true
   grid_heights: [180.0, 183.0]
   file_to: test_wind.gpkg
 """)
@@ -1266,12 +1267,28 @@ advanced:
     out = tmp / "out_new"
     names = _output_names(out)
     want = {"test_voxel.nc", "test_surfaces.gpkg", "test_surfaces.gdb",
-            "test_surfaces.shp", "test_wind/test_wind_z180m.nc",
-            "test_wind/test_wind_z183m.nc", "test_wind.gpkg",
+            "test_surfaces.shp", "test_wind.nc", "test_wind.gpkg",
             "test_lad_3d.nc"}
     check(rc == 0 and names == want,
           f"layout: run writes exactly the named files ({sorted(names)})",
           failures)
+    # the default wind netCDF: ONE file, every height on z, equal to the
+    # per-height files of the legacy run height by height
+    import numpy as _npw
+    with Dataset(out / "test_wind.nc") as nc:
+        zs = [float(z) for z in nc["z"][:]]
+        ok = (nc["u"].dimensions == ("time", "z", "y", "x") and zs == [180.0, 183.0]
+              and nc["time"].size > 1)
+        for kz, h in enumerate(zs):
+            with Dataset(tmp / "out" / "test_wind"
+                         / f"test_wind_z{h:g}m.nc") as one:
+                for var in ("u", "v", "w", "speed", "dir_met"):
+                    a = _npw.ma.filled(nc[var][:, kz], _npw.nan)
+                    b = _npw.ma.filled(one[var][:, 0], _npw.nan)
+                    ok &= bool(_npw.allclose(a, b, equal_nan=True,
+                                             atol=1e-6))
+    check(ok, "wind: the single file holds every height on z, each equal "
+              "to its per-height file", failures)
     # voxel `speed` (horizontal) requested through the new layout
     sp_cfg = tmp / "config_speed_h.yaml"
     sp_cfg.write_text(new.read_text().replace("./out_new", "./out_speed_h")
@@ -1309,9 +1326,7 @@ advanced:
                     .replace("file: '{name}_surfaces.shp'", "file: null"))
     rc = pipeline_main(["-c", str(only), "--stages", "wind", "surfaces"])
     names = _output_names(tmp / "out_only")
-    check(rc == 0 and names == {"test_wind/test_wind_z180m.nc",
-                                "test_wind/test_wind_z183m.nc",
-                                "test_surfaces.gpkg"},
+    check(rc == 0 and names == {"test_wind.nc", "test_surfaces.gpkg"},
           f"layout: null files are skipped, removed wind settings are "
           f"ignored ({sorted(names)})", failures)
     legacy_old = tmp / "config_legacy_gpkg.yaml"
@@ -1327,8 +1342,9 @@ advanced:
           and "multipatch_split" not in lc["surfaces"].keys(),
           "config: legacy wind GeoPackage keys load and are dropped",
           failures)
-    with Dataset(tmp / "out_only" / "test_wind" / "test_wind_z183m.nc") as nc:
-        check(nc["u"].dimensions == ("time", "z", "y", "x"),
+    with Dataset(tmp / "out_only" / "test_wind.nc") as nc:
+        check(nc["u"].dimensions == ("time", "z", "y", "x")
+              and nc.dimensions["z"].size == 2,
               "layout: NetCDF-only wind grid is complete", failures)
 
     # -- absolute humidity ---------------------------------------------------
@@ -1486,8 +1502,7 @@ advanced:
     rejects(base.replace("{name}_surfaces.gdb", "{name}_surfaces"),
             "must end in .gdb", "layout: a wrong output extension is "
                                 "rejected before anything is written")
-    rejects(base.replace("heights: [180, 183]", "heights: [180]")
-            .replace("{name}_voxel.nc", "{name}_wind/{name}_wind_z180m.nc"),
+    rejects(base.replace("{name}_voxel.nc", "{name}_wind.nc"),
             "would both write",
             "config: two outputs on one path are rejected")
     # no wind.netcdf.heights: one file per PALM level of the voxel range,
@@ -1501,23 +1516,20 @@ advanced:
     with Dataset(ad / "test_voxel.nc") as vx:
         vz = [float(z) for z in vx["z"][:]]
         vu0 = _np_thermo.ma.filled(vx["u"][0], _np_thermo.nan)
-    files = sorted((ad / "test_wind").glob("test_wind_z*.nc"))
-    zs = []
-    for f in files:
-        with Dataset(f) as nc:
-            zs.append(float(nc["z"][0]))
-    ok = rc == 0 and sorted(zs) == vz
-    if ok:
+    with Dataset(ad / "test_wind.nc") as nc:
+        zs = [float(z) for z in nc["z"][:]]
         k = len(vz) // 2
-        with Dataset(ad / "test_wind" / "test_wind_z{:g}m.nc".format(vz[k])) as nc:
-            g = _np_thermo.ma.filled(nc["u"][0, 0], _np_thermo.nan)
+        g = _np_thermo.ma.filled(nc["u"][0, k], _np_thermo.nan)
+    files = zs
+    ok = rc == 0 and zs == vz
+    if ok:
         ok = (_np_thermo.array_equal(_np_thermo.isnan(g),
                                      _np_thermo.isnan(vu0[k]))
               and _np_thermo.allclose(g[~_np_thermo.isnan(g)],
                                       vu0[k][~_np_thermo.isnan(g)],
                                       atol=1e-6))
-    check(ok, "wind: without heights, one file per voxel level "
-              f"({len(files)} files on the voxel's z, values equal)",
+    check(ok, "wind: without heights, every voxel level on z "
+              f"({len(files)} heights on the voxel's z, values equal)",
           failures)
 
     # air temperature alone is a valid voxel request
@@ -1579,10 +1591,32 @@ advanced:
     high.write_text(base.replace("./out_new", "./out_high")
                     .replace("heights: [180, 183]", "heights: [180, 999]"))
     rc = pipeline_main(["-c", str(high), "--stages", "wind"])
-    check(rc == 0 and (tmp / "out_high" / "test_wind" / "test_wind_z180m.nc").exists()
-          and not (tmp / "out_high" / "test_wind" / "test_wind_z999m.nc").exists(),
+    with Dataset(tmp / "out_high" / "test_wind.nc") as nc:
+        zs_high = [float(z) for z in nc["z"][:]]
+    check(rc == 0 and zs_high == [180.0],
           "wind: an absolute height above the file's levels is skipped",
           failures)
+    # per_height: true (or {z} in the name) -> the folder of per-height files
+    for label, text in (
+            ("per_height: true", base.replace("./out_new", "./out_perh")
+             .replace("        every_nth_column: 1\n    gpkg:",
+                      "        every_nth_column: 1\n        per_height: true\n"
+                      "    gpkg:")),
+            ("{z} in the name", base.replace("./out_new", "./out_zname")
+             .replace("{name}_wind.nc", "{name}_wind_{z}m.nc"))):
+        cfg_p = tmp / "config_perh.yaml"
+        cfg_p.write_text(text)
+        rc = pipeline_main(["-c", str(cfg_p), "--stages", "wind"])
+        od = tmp / ("out_perh" if "per_height" in label else "out_zname")
+        nc_names = sorted(n for n in _output_names(od) if n.endswith(".nc"))
+        want_names = (["test_wind/test_wind_z180m.nc",
+                       "test_wind/test_wind_z183m.nc"]
+                      if "per_height" in label else
+                      ["test_wind/test_wind_180m.nc",
+                       "test_wind/test_wind_183m.nc"])
+        check(rc == 0 and nc_names == want_names,
+              f"wind: {label} writes one file per height ({nc_names})",
+              failures)
     return failures
 
 
@@ -1742,7 +1776,7 @@ advanced:
           "output crs: arrow z unchanged (m above sea level)", failures)
 
     # -- wind: netCDF on lat/lon, direction from the rotated u/v ----------
-    with Dataset(out / "test_wind" / "test_wind_z183m.nc") as nc:
+    with Dataset(out / "test_wind.nc") as nc:
         check(nc["u"].dimensions == ("time", "z", "lat", "lon")
               and nc["crs"].EPSG_code == "EPSG:4326",
               "output crs: wind netCDF on lat/lon in EPSG:4326", failures)

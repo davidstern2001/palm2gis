@@ -73,10 +73,12 @@ def stage_outputs(cfg, stage):
     if stage == "wind":
         wd = cfg["wind"]
         out = [cfg.out_path(wd["file_to"])] if wd["file_to"] else []
-        # Without an explicit list the heights are the voxel's levels,
-        # known only once the 3D file is read, so they are not listed.
-        if wd["grid_to"] and wd["grid_heights"]:
-            from .steps.wind import level_path
+        from .steps.wind import level_path, per_height
+        if wd["grid_to"] and not per_height(wd):
+            out.append(cfg.out_path(wd["grid_to"]))
+        # Per height without an explicit list: the heights are the voxel's
+        # levels, known only once the 3D file is read, so not listed.
+        elif wd["grid_to"] and wd["grid_heights"]:
             out += [cfg.out_path(level_path(wd["grid_to"], h))
                     for h in (wd["grid_heights"] or [])]
         return out

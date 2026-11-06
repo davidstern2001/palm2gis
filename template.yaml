@@ -160,15 +160,17 @@ surfaces:
 # dir_met is the direction the wind blows FROM, clockwise from north.
 wind:
     #enabled: true
-    netcdf:                      # ONE FILE PER HEIGHT: (time, z, y, x) with
-        file: '{name}_wind.nc'   # u, v, w, speed, dir_met; written as
-                                 # {name}_wind/{name}_wind_z<height>m.nc,
-                                 # all heights in one folder ({z} in the
-                                 # name places the height yourself).
+    netcdf:                      # (time, z, y, x) with u, v, w, speed,
+        file: '{name}_wind.nc'   # dir_met; ONE file, every height on z.
                                  # ArcGIS Pro: Add Multidimensional Raster
-                                 # Layer -> Vector Field.
+                                 # Layer -> Vector Field, height on the z
+                                 # slider; ArcGIS Maps SDK: the layer's
+                                 # multidimensionalDefinition.
+        #per_height: false       # true: one file per height instead,
+                                 # {name}_wind/{name}_wind_z<height>m.nc
+                                 # ({z} in the name does the same)
         #heights: [200.0]        # m ABOVE SEA LEVEL. Left out (default):
-                                 # one file per PALM level of the voxel's
+                                 # every PALM level of the voxel's
                                  # range (region.height_above_surface),
                                  # on exactly the voxel's z. Listed:
                                  # between two PALM levels the wind is

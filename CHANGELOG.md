@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.36.0
+
+**Wind netCDF: one file with every height** *(changes the wind output)*
+
+- `wind.netcdf` now writes ONE file, `(time, z, y, x)`, whose z axis
+  holds every height (ascending; the voxel's levels by default, or
+  `wind.netcdf.heights`), instead of a folder of one file per height. A
+  single layer then carries all heights: the z slider in ArcGIS Pro, or
+  the imagery layer's `multidimensionalDefinition` in the ArcGIS Maps
+  SDK, picks one. Values are those of the per-height files.
+- `wind.netcdf.per_height: true` (legacy `grid_per_height`), or `{z}` in
+  the file name, keeps the 0.29 layout: one file per height in
+  `{name}_wind/`, for tools without a height selector.
+
 ## 0.35.1
 
 - README, Origins and attribution: palm2gis "grew out of" `paraview_vis`

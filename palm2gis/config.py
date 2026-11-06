@@ -207,12 +207,15 @@ DEFAULTS = {
     "wind": {
         "enabled": False,
         "file_from": None,         # DATA_3D_NETCDF* (needs u, v)
-        # Gridded NetCDF for ArcGIS Pro's flow / vector-field renderers:
-        # ONE FILE PER ABSOLUTE HEIGHT in grid_heights, each (time, z, y, x)
-        # with u, v, w, speed and dir_met and z of length 1, all in one
-        # folder named after the pattern (x_wind.nc -> x_wind/).
-        "grid_to": None,           # output .nc pattern; {z} = the height,
-                                   # else _z<height>m is added before .nc
+        # Gridded NetCDF for ArcGIS's flow / vector-field renderers:
+        # (time, z, y, x) with u, v, w, speed and dir_met at ABSOLUTE
+        # heights. Default: ONE file, every height on its z axis. With
+        # grid_per_height (or {z} in grid_to): one file per height, z of
+        # length 1, in one folder named after the pattern (x_wind.nc ->
+        # x_wind/x_wind_z<height>m.nc).
+        "grid_to": None,           # output .nc (pattern with {z} = the
+                                   # height, per-height files only)
+        "grid_per_height": False,
         "grid_heights": None,      # heights ABOVE SEA LEVEL [m]; each is
                                    # interpolated between the two PALM
                                    # levels around it. None: every PALM
@@ -669,6 +672,10 @@ class Config:
                 raise ConfigError(f"wind.arrow_scale must be a positive "
                                   f"number, got {sc!r}.")
             gh = c["wind"]["grid_heights"]
+            if not isinstance(c["wind"]["grid_per_height"], bool):
+                raise ConfigError("wind.grid_per_height must be true or "
+                                  "false (without quotes), got {!r}."
+                                  .format(c["wind"]["grid_per_height"]))
             if c["wind"]["grid_to"] and gh is not None:
                 # None: every PALM level of the voxel range.
                 if not isinstance(gh, (list, tuple)) or not gh:
