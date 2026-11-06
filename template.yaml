@@ -139,8 +139,10 @@ surfaces:
     # Which format for what:
     #   .gpkg  mainly QGIS        every element, one row per element per
     #                             record, temporal style embedded
-    #   .gdb   local ArcGIS Pro   the same elements; native datetimes for
-    #                             the time slider, long field names
+    #   .gdb   local ArcGIS Pro   the same elements as MultiPatch; native
+    #                             datetimes for the time slider, long
+    #                             field names
+    #   (every face's normal points out of the building, in all three)
     #   .shp   web ArcGIS         the same elements as MultiPatch,
     #                             published as a 3D object scene layer:
     #                             one feature per element, one field per

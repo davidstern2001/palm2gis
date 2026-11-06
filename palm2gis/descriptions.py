@@ -241,7 +241,8 @@ def write_gpkg_descriptions(path, layer):
 # ------------------------------
 # 4. FILE GEODATABASE FIELD ALIASES
 # ------------------------------
-def write_with_aliases(frame, path, driver, layer, append=False):
+def write_with_aliases(frame, path, driver, layer, append=False,
+                       geometry_type=None, layer_options=None):
     """Write *frame* with pyogrio, carrying field aliases where possible.
 
     pyogrio's DataFrame writer has no way to pass an alias, but GDAL
@@ -249,6 +250,9 @@ def write_with_aliases(frame, path, driver, layer, append=False):
     through the Arrow writer (the first frame), after which later frames
     are appended the usual way and inherit the field definitions. Without
     pyarrow the frame is written plainly, with no aliases.
+
+    `geometry_type` overrides the layer's declared type and
+    `layer_options` are GDAL layer creation options (first frame only).
     """
     if append:
         pyogrio.write_dataframe(frame, path, driver=driver, layer=layer,
@@ -264,7 +268,9 @@ def write_with_aliases(frame, path, driver, layer, append=False):
     if not ok:
         debug("[fields] pyarrow, pyogrio.write_arrow or GDAL >= 3.8 missing "
               "- {} written without field aliases.", Path(path).name)
-        pyogrio.write_dataframe(frame, path, driver=driver, layer=layer)
+        pyogrio.write_dataframe(frame, path, driver=driver, layer=layer,
+                                geometry_type=geometry_type,
+                                layer_options=layer_options)
         return
 
     geom = frame.geometry.name
@@ -291,10 +297,13 @@ def write_with_aliases(frame, path, driver, layer, append=False):
     tbl = pa.Table.from_arrays(
         cols, schema=pa.schema(fields, metadata=tbl.schema.metadata))
 
-    kinds = frame.geom_type.dropna().unique()
-    gtype = str(kinds[0]) if len(kinds) == 1 else "Unknown"
-    if gtype != "Unknown" and bool(frame.has_z.any()):
-        gtype += " Z"
+    gtype = geometry_type
+    if gtype is None:
+        kinds = frame.geom_type.dropna().unique()
+        gtype = str(kinds[0]) if len(kinds) == 1 else "Unknown"
+        if gtype != "Unknown" and bool(frame.has_z.any()):
+            gtype += " Z"
     pyogrio.write_arrow(tbl, path, driver=driver, layer=layer,
                         geometry_name=geom, geometry_type=gtype,
-                        crs=frame.crs.to_wkt() if frame.crs else None)
+                        crs=frame.crs.to_wkt() if frame.crs else None,
+                        layer_options=layer_options)

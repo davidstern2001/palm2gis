@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.37.0
+
+**Surface face normals point outwards, consistently** *(fix; changes the
+`.gdb` geometry type)*
+
+- The corner order of a surface quad depended only on the axis a wall
+  runs along, so north- and west-facing walls and `down` faces were wound
+  inwards while south and east walls and roofs were wound outwards - in
+  the GeoPackage, the File Geodatabase and the MultiPatch shapefile. Every
+  quad now runs counter-clockwise seen from outside: its normal
+  (right-hand rule) points out of the building into the air (Blender,
+  OpenGL and CityGML front face).
+- The File Geodatabase feature classes `surfaces` and `walls` are now
+  **MultiPatch** instead of PolygonZ. For a polygon layer GDAL rewrites
+  every ring into Esri's clockwise-from-above order: that turned every
+  roof upside down, and a wall - no area seen from above - got its
+  direction from rounding noise in the reprojected corners, so faces of
+  one facade pointed in and out at random (about three walls in four
+  inwards in EPSG:3857). MultiPatch keeps the corner order. Fields,
+  datetimes, NULLs and aliases are unchanged.
+- Tests read the face normals back from all three formats (the `.shp`
+  from its bytes), in the PALM CRS and reprojected.
+
 ## 0.36.0
 
 **Wind netCDF: one file with every height** *(changes the wind output)*

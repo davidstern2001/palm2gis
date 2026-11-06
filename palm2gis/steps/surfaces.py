@@ -27,7 +27,7 @@ from netCDF4 import Dataset
 
 import geopandas as gpd
 import pyogrio
-from shapely.geometry import MultiPolygon, Polygon
+from shapely.geometry import GeometryCollection, MultiPolygon, Polygon
 
 from ..descriptions import write_gpkg_descriptions, write_with_aliases
 from ..log import debug, get_logger, info, stopwatch, warning
@@ -208,6 +208,14 @@ def _element_quad(x, y, z, zen, az, grid):
     dx x dy quads at their own height; wall faces (zenith 90) become
     vertical dz-tall quads spanning the cell in the direction the wall
     runs. Absolute coordinates.
+
+    The corners run counter-clockwise seen from OUTSIDE, so the face
+    normal by the right-hand rule, (p1 - p0) x (p2 - p1), points out of
+    the building into the air: up for roofs and ground, down for 'down'
+    faces, and towards the wall's azimuth for walls - the front face in
+    Blender, OpenGL and CityGML. The order used to depend only on the
+    axis a wall runs along, so north and west walls (and 'down' faces)
+    were wound inwards while south and east walls were wound outwards.
     """
     ox, oy = grid.origin_x, grid.origin_y
     dx, dy, dz = grid.dx, grid.dy, grid.dz
@@ -217,20 +225,28 @@ def _element_quad(x, y, z, zen, az, grid):
     # it describes.
     z = float(grid.abs_z(z))
     if abs(zen - 90.0) > 45.0:            # horizontal face (up or down)
-        return Polygon([(ox + x - dx / 2.0, oy + y - dy / 2.0, z),
-                        (ox + x + dx / 2.0, oy + y - dy / 2.0, z),
-                        (ox + x + dx / 2.0, oy + y + dy / 2.0, z),
-                        (ox + x - dx / 2.0, oy + y + dy / 2.0, z)])
-    z0, z1 = z - dz / 2.0, z + dz / 2.0
-    if _wall_facing(az) in ("N", "S"):    # y-normal wall, spans x
-        return Polygon([(ox + x - dx / 2.0, oy + y, z0),
-                        (ox + x + dx / 2.0, oy + y, z0),
-                        (ox + x + dx / 2.0, oy + y, z1),
-                        (ox + x - dx / 2.0, oy + y, z1)])
-    return Polygon([(ox + x, oy + y - dy / 2.0, z0),   # x-normal wall
+        ring = [(ox + x - dx / 2.0, oy + y - dy / 2.0, z),   # normal +z
+                (ox + x + dx / 2.0, oy + y - dy / 2.0, z),
+                (ox + x + dx / 2.0, oy + y + dy / 2.0, z),
+                (ox + x - dx / 2.0, oy + y + dy / 2.0, z)]
+        outward = zen < 90.0
+    else:
+        z0, z1 = z - dz / 2.0, z + dz / 2.0
+        facing = _wall_facing(az)
+        if facing in ("N", "S"):          # y-normal wall, spans x
+            ring = [(ox + x - dx / 2.0, oy + y, z0),         # normal -y
+                    (ox + x + dx / 2.0, oy + y, z0),
+                    (ox + x + dx / 2.0, oy + y, z1),
+                    (ox + x - dx / 2.0, oy + y, z1)]
+            outward = facing == "S"
+        else:                             # x-normal wall, spans y
+            ring = [(ox + x, oy + y - dy / 2.0, z0),         # normal +x
                     (ox + x, oy + y + dy / 2.0, z0),
                     (ox + x, oy + y + dy / 2.0, z1),
-                    (ox + x, oy + y - dy / 2.0, z1)])
+                    (ox + x, oy + y - dy / 2.0, z1)]
+            outward = (facing == "E" if facing else
+                       np.sin(np.radians(az)) >= 0.0)
+    return Polygon(ring if outward else ring[::-1])
 
 
 def _orientation(zen, az):
@@ -297,11 +313,20 @@ def _element_frames(cfg, grid, nc, its, times, xs, ys, zs, zen, az, idx):
 
 def _elements_fgdb(cfg, grid, nc, its, times, xs, ys, zs, zen, az, idx,
                    path, layer):
-    """Write the same elements as PolygonZ into a File Geodatabase.
+    """Write the same elements as MultiPatch into a File Geodatabase.
 
     The GeoPackage keeps QGIS happy; this is the container ArcGIS opens
     natively, with real datetimes, full-length field names and NULLs, so
     nothing is lost relative to the GeoPackage.
+
+    MultiPatch, not PolygonZ: for a polygon layer GDAL rewrites every ring
+    into Esri's order (clockwise seen from above). That turned every roof
+    upside down, and a wall - which has no area seen from above - got a
+    direction decided by rounding noise in its reprojected corners, so
+    faces of one facade pointed in and out at random (in EPSG:3857 about
+    three in four walls inwards). A MultiPatch keeps the corners in the
+    order _element_quad builds them: every face's normal points outwards.
+    GDAL takes a MultiPatch part as a GeometryCollection of one polygon.
     """
     sw = stopwatch()
     if idx.size == 0:
@@ -310,8 +335,12 @@ def _elements_fgdb(cfg, grid, nc, its, times, xs, ys, zs, zen, az, idx,
         return
     for n, it, frame in _element_frames(cfg, grid, nc, its, times, xs, ys,
                                         zs, zen, az, idx):
+        frame[frame.geometry.name] = gpd.GeoSeries(
+            [GeometryCollection([q]) for q in frame.geometry],
+            index=frame.index, crs=frame.crs)
         write_with_aliases(frame, path, "OpenFileGDB", layer,
-                           append=(n > 0))
+                           append=(n > 0), geometry_type="MultiPolygon Z",
+                           layer_options={"CREATE_MULTIPATCH": "YES"})
     info("[surfaces] wrote {} ({}): {} x {} records in {}", cfg.disp(path),
          layer, idx.size, len(its), sw)
 
@@ -319,8 +348,7 @@ def _elements_fgdb(cfg, grid, nc, its, times, xs, ys, zs, zen, az, idx,
 # ------------------------------
 # 3c. MULTIPATCH (WEB ARCGIS)
 # ------------------------------
-# A shapefile is the only container GDAL writes ESRI MultiPatch into
-# (OpenFileGDB writes MultiPolygon Z), and a 3D object scene layer - what
+# The shapefile MultiPatch is for publishing: a 3D object scene layer - what
 # ArcGIS shows in a browser - is published from multipatch. The DBF
 # beside it caps field names at 10 characters and a table at 255 fields,
 # and has no NULL, so the layout is "wide" and spelled out explicitly.

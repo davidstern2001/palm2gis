@@ -244,6 +244,76 @@ wind:
 # ------------------------------
 # 4. OUTPUT VERIFICATION
 # ------------------------------
+_OUTWARD = {"up": (0, 0, 1), "down": (0, 0, -1), "wall_N": (0, 1, 0),
+            "wall_S": (0, -1, 0), "wall_E": (1, 0, 0), "wall_W": (-1, 0, 0)}
+
+
+def _newell(ring):
+    """Face normal of a ring (Newell's method); points outward when the
+    ring runs counter-clockwise seen from outside."""
+    import numpy as np
+    ring = np.asarray(ring, dtype="f8")
+    if np.allclose(ring[0], ring[-1]):
+        ring = ring[:-1]
+    n = np.zeros(3)
+    for a, c in zip(ring, np.roll(ring, -1, axis=0)):
+        n += [(a[1] - c[1]) * (a[2] + c[2]), (a[2] - c[2]) * (a[0] + c[0]),
+              (a[0] - c[0]) * (a[1] + c[1])]
+    return n
+
+
+def _inverted_faces(rings, orients):
+    """{orient: number of faces whose normal points INTO the building}."""
+    import numpy as np
+    bad = {}
+    for r, o in zip(rings, orients):
+        if np.dot(_newell(r), _OUTWARD[o]) <= 0:
+            bad[o] = bad.get(o, 0) + 1
+    return bad
+
+
+def _shp_multipatch_rings(path):
+    """First ring of every MultiPatch record, read from the .shp bytes
+    themselves - the order ArcGIS gets, with no GDAL in between."""
+    import struct
+    import numpy as np
+    b = open(path, "rb").read()
+    off, rings = 100, []
+    while off < len(b):
+        _num, clen = struct.unpack(">ii", b[off:off + 8])
+        rec = b[off + 8:off + 8 + 2 * clen]
+        off += 8 + 2 * clen
+        nparts, npts = struct.unpack("<ii", rec[36:44])
+        p = 44
+        parts = struct.unpack(f"<{nparts}i", rec[p:p + 4 * nparts])
+        p += 8 * nparts                                  # parts + part types
+        xy = np.frombuffer(rec[p:p + 16 * npts], "<f8").reshape(npts, 2)
+        p += 16 * npts + 16                              # points + z range
+        z = np.frombuffer(rec[p:p + 8 * npts], "<f8")
+        end = parts[1] if nparts > 1 else npts
+        rings.append(np.column_stack([xy, z])[parts[0]:end])
+    return rings
+
+
+def _gdb_layer_types(gdb):
+    """Geometry type byte of every table in a File Geodatabase
+    (4 = polygon, 9 = MultiPatch), read from the .gdbtable headers."""
+    import struct
+    out = {}
+    for f in sorted(Path(gdb).glob("*.gdbtable")):
+        b = f.read_bytes()
+        sec = struct.unpack_from("<Q", b, 32)[0]
+        flags = struct.unpack_from("<iiI", b, sec)[2]
+        if flags & 0xFF:
+            out[f.name] = flags & 0xFF
+    return out
+
+
+def _polygon_rings(geoms):
+    return [list((g.geoms[0] if g.geom_type == "MultiPolygon" else g)
+                 .exterior.coords) for g in geoms]
+
+
 def _output_names(out):
     """Products in an output directory: top-level files, plus the wind
     netCDFs inside their folder as 'folder/file'."""
@@ -836,6 +906,41 @@ def verify_regressions(tmp, out, pipeline_main):
           .exists(),
           "multipatch: too many fields stop the run before the GeoPackage "
           "is written", failures)
+
+    # -- face normals: every face points out of the building -------------
+    from types import SimpleNamespace
+    from palm2gis.steps.surfaces import _element_quad
+    fake = SimpleNamespace(origin_x=458000.0, origin_y=5546000.0, dx=1.0,
+                           dy=1.0, dz=1.0, abs_z=lambda z: z + 180.0)
+    quads, labels = [], []
+    for label, zen, az in (("up", 0.0, -9999.0), ("down", 180.0, -9999.0),
+                           ("wall_N", 90.0, 0.0), ("wall_E", 90.0, 90.0),
+                           ("wall_S", 90.0, 180.0), ("wall_W", 90.0, 270.0),
+                           ("wall_S", 90.0, 179.99999)):
+        quads.append(list(_element_quad(10.5, 20.5, 5.0, zen, az,
+                                        fake).exterior.coords))
+        labels.append(label)
+    bad = _inverted_faces(quads, labels)
+    check(not bad, f"normals: every orientation's quad faces outward "
+                   f"(inverted: {bad or 'none'})", failures)
+    mp_rings = _shp_multipatch_rings(out / "test_surfaces.shp")
+    mp_or = pyogrio.read_dataframe(out / "test_surfaces.shp",
+                                   read_geometry=False)["orient"]
+    bad = _inverted_faces(mp_rings, mp_or)
+    check(len(mp_rings) == len(mp_or) and not bad,
+          f"normals: MultiPatch .shp faces outward, read from its bytes "
+          f"(inverted: {bad or 'none'})", failures)
+    for fname, layer in (("test_surfaces.gpkg", "surfaces"),
+                         ("test_surfaces.gdb", "surfaces"),
+                         ("test_surfaces.gdb", "walls")):
+        df = pyogrio.read_dataframe(out / fname, layer=layer)
+        bad = _inverted_faces(_polygon_rings(df.geometry), df["orient"])
+        check(not bad, f"normals: {fname} ({layer}) faces outward "
+                       f"(inverted: {bad or 'none'})", failures)
+    types = _gdb_layer_types(out / "test_surfaces.gdb")
+    check(list(types.values()).count(9) == 2,
+          f"fgdb: both feature classes stored as MultiPatch, which keeps "
+          f"the corner order ({types})", failures)
 
     # -- file geodatabase --------------------------------------------------
     gdb = out / "test_surfaces.gdb"
@@ -1804,6 +1909,16 @@ advanced:
           "output crs: surface vertices = UTM vertices transformed, z same",
           failures)
     fg = gpd.read_file(out / "test_surfaces.gdb", layer="surfaces")
+    for layer in ("surfaces", "walls"):
+        dfg = gpd.read_file(out / "test_surfaces.gdb", layer=layer)
+        bad = _inverted_faces(_polygon_rings(dfg.geometry), dfg["orient"])
+        check(not bad, f"output crs: reprojected .gdb ({layer}) faces "
+                       f"outward (inverted: {bad or 'none'})", failures)
+    bad = _inverted_faces(
+        _shp_multipatch_rings(out / "test_surfaces.shp"),
+        gpd.read_file(out / "test_surfaces.shp")["orient"])
+    check(not bad, f"output crs: reprojected MultiPatch .shp faces outward "
+                   f"(inverted: {bad or 'none'})", failures)
     check(fg.crs is not None and fg.crs.to_epsg() == 4326,
           "output crs: File Geodatabase in EPSG:4326", failures)
     shp = gpd.read_file(out / "test_surfaces.shp")
