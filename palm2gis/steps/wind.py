@@ -84,18 +84,38 @@ def _solid(nc, grid, it, k, mask_src, z_rel):
 
 
 def _heights(cfg, grid, nc, z_rel):
-    """The absolute heights [m a.s.l.] both wind outputs sample:
-    wind.netcdf.heights, or every PALM level of the voxel's vertical
-    range - the same region.height_above_surface cut and the same k = 0
-    rule - so they sit exactly on the voxel file's z values."""
+    """The absolute heights [m a.s.l.] both wind outputs sample.
+
+    wind.netcdf.heights if listed. Otherwise the voxel's vertical range -
+    the same region.height_above_surface cut and the same k = 0 rule -
+    either every PALM level in it (the default, exactly on the voxel
+    file's z values) or, with wind.netcdf.height_step = n, every multiple
+    of n metres a.s.l. inside it (185, 190, 195 ... for n = 5), each
+    interpolated between the two PALM levels around it. Fewer heights
+    make a smaller file when dz is fine.
+    """
     wd = cfg["wind"]
     if wd["grid_heights"]:
         return [float(h) for h in wd["grid_heights"]]
     nz0, nzmax = resolve_z_range(nc, grid, "wind")
     k_off = 1 if (cfg["voxel"].get("drop_k0", True) and nz0 == 0) else 0
-    heights = [float(h) for h in grid.abs_z(z_rel[nz0 + k_off:nzmax])]
-    info("[wind] every voxel level: {} heights, {:.1f} .. {:.1f} m",
-         len(heights), heights[0], heights[-1])
+    levels = [float(h) for h in grid.abs_z(z_rel[nz0 + k_off:nzmax])]
+    step = wd.get("grid_height_step")
+    if not step:
+        info("[wind] every voxel level: {} heights, {:.1f} .. {:.1f} m",
+             len(levels), levels[0], levels[-1])
+        return levels
+    step = float(step)
+    lo, hi = levels[0], levels[-1]
+    k0, k1 = int(np.ceil(lo / step - 1e-9)), int(np.floor(hi / step + 1e-9))
+    heights = [round(k * step, 6) for k in range(k0, k1 + 1)]
+    if not heights:
+        raise ValueError(
+            "wind.grid_height_step {:g} m: no multiple of it between {:.2f} "
+            "and {:.2f} m a.s.l. (the voxel range) - use a smaller step."
+            .format(step, lo, hi))
+    info("[wind] every {:g} m: {} heights, {:g} .. {:g} m (of {} voxel "
+         "levels)", step, len(heights), heights[0], heights[-1], len(levels))
     return heights
 
 

@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.38.0
+
+**Wind heights every n metres** *(new setting)*
+
+- `wind.netcdf.height_step: n` (legacy `wind.grid_height_step`) writes
+  the wind only at every multiple of n metres above sea level inside the
+  voxel's vertical range (185, 190, 195 ... for n = 5) instead of at
+  every PALM level, each height interpolated linearly between the two
+  levels around it, NoData where either is in terrain or a building. The
+  wind netCDF shrinks by the same factor (at dz = 1 m and a 40 m range,
+  8 heights instead of 40); the 3D arrows use the same heights.
+- Not together with `wind.netcdf.heights`; a step with no multiple in the
+  range stops the run with a message.
+
 ## 0.37.0
 
 **Surface face normals point outwards, consistently** *(fix; changes the

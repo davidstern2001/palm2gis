@@ -216,6 +216,10 @@ DEFAULTS = {
         "grid_to": None,           # output .nc (pattern with {z} = the
                                    # height, per-height files only)
         "grid_per_height": False,
+        # Heights every n metres a.s.l. (multiples of n) inside the
+        # voxel's vertical range, instead of every PALM level; None = every
+        # level. Not together with grid_heights.
+        "grid_height_step": None,
         "grid_heights": None,      # heights ABOVE SEA LEVEL [m]; each is
                                    # interpolated between the two PALM
                                    # levels around it. None: every PALM
@@ -676,6 +680,18 @@ class Config:
                 raise ConfigError("wind.grid_per_height must be true or "
                                   "false (without quotes), got {!r}."
                                   .format(c["wind"]["grid_per_height"]))
+            hs = c["wind"]["grid_height_step"]
+            if hs is not None:
+                if (isinstance(hs, bool) or not isinstance(hs, (int, float))
+                        or hs <= 0):
+                    raise ConfigError(
+                        "wind.grid_height_step must be a positive number of "
+                        "metres, got {!r}.".format(hs))
+                if gh:
+                    raise ConfigError(
+                        "wind.grid_height_step and wind.grid_heights are both "
+                        "set - use one: a step for evenly spaced heights, or "
+                        "a list.")
             if c["wind"]["grid_to"] and gh is not None:
                 # None: every PALM level of the voxel range.
                 if not isinstance(gh, (list, tuple)) or not gh:

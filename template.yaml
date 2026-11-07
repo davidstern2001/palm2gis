@@ -179,6 +179,10 @@ wind:
                                  # interpolated linearly, NoData where
                                  # either level is terrain or building
                                  # (also the heights of the gpkg arrows)
+        #height_step: null       # n: every multiple of n m a.s.l. inside
+                                 # the voxel's range instead of every
+                                 # PALM level (185, 190, ... for 5) -
+                                 # a smaller file; not with heights
         #every_nth_column: 1
     gpkg:                        # 3D ARROWS (LineStringZ) at the same
         file: null               # heights, along (u, v, w); fields time,

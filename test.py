@@ -1637,6 +1637,54 @@ advanced:
               f"({len(files)} heights on the voxel's z, values equal)",
           failures)
 
+    # height_step: every multiple of n m inside the voxel range, the ones
+    # between two PALM levels interpolated
+    stp = tmp / "config_wind_step.yaml"
+    stp.write_text(base.replace("./out_new", "./out_wind_step")
+                   .replace("        heights: [180, 183]\n",
+                            "        height_step: 3\n"))
+    rc = pipeline_main(["-c", str(stp), "--stages", "voxel", "wind"])
+    sd = tmp / "out_wind_step"
+    with Dataset(sd / "test_voxel.nc") as vx:
+        vz_s = _np_thermo.asarray(vx["z"][:], dtype="f8")
+        vu_s = _np_thermo.ma.filled(vx["u"][0], _np_thermo.nan)
+    with Dataset(sd / "test_wind.nc") as nc:
+        zs_s = [float(z) for z in nc["z"][:]]
+        wu_s = _np_thermo.ma.filled(nc["u"][0], _np_thermo.nan)
+    k0s = int(_np_thermo.ceil(vz_s[0] / 3.0 - 1e-9))
+    k1s = int(_np_thermo.floor(vz_s[-1] / 3.0 + 1e-9))
+    want_z = [3.0 * k for k in range(k0s, k1s + 1)]
+    ok = rc == 0 and _np_thermo.allclose(zs_s, want_z)
+    if ok:
+        for kz, h in enumerate(zs_s):
+            j = int(_np_thermo.searchsorted(vz_s, h - 1e-6))
+            if abs(vz_s[j] - h) < 1e-6:          # on a PALM level
+                ref = vu_s[j]
+            else:                                # between j-1 and j
+                t = (h - vz_s[j - 1]) / (vz_s[j] - vz_s[j - 1])
+                ref = (1 - t) * vu_s[j - 1] + t * vu_s[j]
+            ok &= bool(_np_thermo.allclose(wu_s[kz], ref, equal_nan=True,
+                                           atol=1e-5))
+    check(ok, f"wind: height_step 3 gives every multiple of 3 m in the "
+              f"voxel range ({len(zs_s)} of {len(vz_s)} levels: "
+              f"{zs_s[:3]} ...), interpolated between levels", failures)
+    rejects(base.replace("        heights: [180, 183]\n",
+                         "        heights: [180, 183]\n"
+                         "        height_step: 3\n"),
+            "both set", "layout: heights and height_step together are "
+                        "rejected")
+    rejects(base.replace("        heights: [180, 183]\n",
+                         "        height_step: 0\n"),
+            "positive", "layout: height_step 0 is rejected")
+    big = tmp / "config_wind_bigstep.yaml"
+    big.write_text(base.replace("./out_new", "./out_wind_bigstep")
+                   .replace("        heights: [180, 183]\n",
+                            "        height_step: 1000\n"))
+    rc = pipeline_main(["-c", str(big), "--stages", "wind"])
+    check(rc != 0 and not (tmp / "out_wind_bigstep" / "test_wind.nc").exists(),
+          "wind: a height_step with no multiple in the range stops the run "
+          "with a message", failures)
+
     # air temperature alone is a valid voxel request
     ta_only = tmp / "config_ta_only.yaml"
     ta_only.write_text(base.replace("./out_new", "./out_ta_only")

@@ -39,7 +39,7 @@ SCHEMA = {
                  "all_elements_fgdb": _OUT_FILE,
                  "all_elements_multipatch": _OUT_FILE},
     "wind": {"enabled": None,
-             "netcdf": {"file": None, "heights": None,
+             "netcdf": {"file": None, "heights": None, "height_step": None,
                         "every_nth_column": None, "per_height": None},
              "gpkg": {"file": None, "every_nth_column": None,
                       "arrow_length_per_ms": None,
@@ -518,6 +518,17 @@ def translate(user):
             if len(set(grid_heights)) != len(grid_heights):
                 raise LayoutError("wind.netcdf.heights lists a height more "
                                   "than once.")
+        step = nc_blk.get("height_step")
+        if step is not None:
+            _number(step, "wind.netcdf.height_step", None)
+            if step <= 0:
+                raise LayoutError("wind.netcdf.height_step must be a "
+                                  f"positive number of metres, got {step}.")
+            if grid_heights is not None:
+                raise LayoutError(
+                    "wind.netcdf.heights and wind.netcdf.height_step are both "
+                    "set - use one: a list of heights, or a step for evenly "
+                    "spaced ones.")
         _number(nc_blk.get("every_nth_column"),
                 "wind.netcdf.every_nth_column", 1, integer=True)
         _number(gp_blk.get("every_nth_column"),
@@ -531,6 +542,7 @@ def translate(user):
         if grid_heights is not None:
             out["wind"]["grid_heights"] = [float(h) for h in grid_heights]
         _set(out, "wind", "grid_stride", nc_blk.get("every_nth_column"))
+        _set(out, "wind", "grid_height_step", step)
         _set(out, "wind", "grid_per_height",
              _bool(nc_blk.get("per_height"), "wind.netcdf.per_height"))
         _set(out, "wind", "stride", gp_blk.get("every_nth_column"))
@@ -605,6 +617,7 @@ MESSAGE_NAMES = {
     "wind.arrow_scale": "wind.gpkg.arrow_length_per_ms",
     "wind.grid_heights": "wind.netcdf.heights",
     "wind.grid_per_height": "wind.netcdf.per_height",
+    "wind.grid_height_step": "wind.netcdf.height_step",
 }
 _MESSAGE_RE = re.compile(
     r"(?<![\w.])(" + "|".join(re.escape(k) for k in
