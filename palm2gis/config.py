@@ -248,6 +248,11 @@ DEFAULTS = {
     # open, set this to false and the 2D style and temporal settings are
     # unaffected.
     "qgis_styles_3d": True,
+    # CSV files (voxel ranges and histogram, MultiPatch field map):
+    # "excel_cz" = ';' and decimal ',' (UTF-8 with BOM), what Excel with
+    # Czech / European settings splits into columns; "standard" = ',' and
+    # '.', for English Excel, pandas, R. See palm2gis/csvfile.py.
+    "csv_format": "excel_cz",
     # Set by advanced.units.temperature (C | K), and C by default: an air
     # or surface temperature is wanted in degrees C, while a POTENTIAL
     # temperature (theta*) is kelvin-defined and is exempt whatever this
@@ -713,6 +718,10 @@ class Config:
                 if not isinstance(v, int) or isinstance(v, bool) or v < 1:
                     raise ConfigError(f"wind.{key} must be a whole number "
                                       f"of at least 1, got {v!r}.")
+        from .csvfile import FORMATS as _CSV_FORMATS
+        if c["csv_format"] not in _CSV_FORMATS:
+            raise ConfigError("csv_format must be {}, got {!r}.".format(
+                " or ".join(_CSV_FORMATS), c["csv_format"]))
         for key, val in (("project.overwrite", c["project"]["overwrite"]),
                          ("celsius", c["celsius"])):
             if not isinstance(val, bool):

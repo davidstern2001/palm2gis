@@ -60,7 +60,7 @@ SCHEMA = {
         "shapefile": {"multipatch_split": None},   # removed in 0.30.0
         "records": {"skip": None, "count": None, "end": None},
         "time_axis": {"step": None, "start": None},
-        "canopy_file_from": None, "stages": None,
+        "canopy_file_from": None, "stages": None, "csv_format": None,
         # Flat pre-0.25 names, still accepted.
         "nz": None, "dz": None, "origin_time": None, "origin_z": None,
         "surface_pressure": None, "pt_surface": None,
@@ -262,7 +262,7 @@ def _advanced(user, notes):
             if val is not None:
                 out[internal] = val
                 where[internal] = f"advanced.{group}.{key}"
-    for key in ("canopy_file_from", "stages"):
+    for key in ("canopy_file_from", "stages", "csv_format"):
         if adv.get(key) is not None:
             out[key] = adv[key]
             where[key] = f"advanced.{key}"
@@ -400,6 +400,8 @@ def translate(user):
                 "qgis_styles_3d"):
         if adv.get(key) is not None:
             out[key] = adv[key]
+    if adv.get("csv_format") is not None:
+        out["csv_format"] = adv["csv_format"]
     if adv.get("stages") is not None:
         out["stages"] = _names(adv["stages"], "advanced.stages")
 
@@ -618,6 +620,7 @@ MESSAGE_NAMES = {
     "wind.grid_heights": "wind.netcdf.heights",
     "wind.grid_per_height": "wind.netcdf.per_height",
     "wind.grid_height_step": "wind.netcdf.height_step",
+    "csv_format must": "advanced.csv_format must",
 }
 _MESSAGE_RE = re.compile(
     r"(?<![\w.])(" + "|".join(re.escape(k) for k in

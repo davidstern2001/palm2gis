@@ -600,7 +600,7 @@ def stage_voxel(cfg, grid):
             stats = voxel_statistics(fout, out_vars, len(its), ranges,
                                      FILL)
 
-    for p in write_sidecars(stats, file_to, len(its)):
+    for p in write_sidecars(stats, file_to, len(its), cfg["csv_format"]):
         info("[voxel] wrote {}", cfg.disp(p))
 
     debug("[voxel] {}: {} x {} x {} x {} (t,z,{},{}), {}",

@@ -266,6 +266,12 @@ canopy:
         #styles: true            # write .qml styles next to the layers
         #styles_3d: true         # add a 3D renderer to those styles
     #canopy_file_from: null      # LAD source; default input.static_driver
+    #csv_format: excel_cz        # excel_cz | standard. The CSV files
+                                 # (voxel ranges, histogram, MultiPatch
+                                 # field map): excel_cz = ';' and decimal
+                                 # ',' for Excel with Czech / European
+                                 # settings; standard = ',' and '.' for
+                                 # English Excel, pandas, R
 
     # --- 9e. Record selection -----------------------------------------
     # Record indices instead of the time section, applied per file.

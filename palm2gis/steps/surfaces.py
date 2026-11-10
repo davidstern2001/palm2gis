@@ -29,6 +29,7 @@ import geopandas as gpd
 import pyogrio
 from shapely.geometry import GeometryCollection, MultiPolygon, Polygon
 
+from ..csvfile import CsvOut
 from ..descriptions import write_gpkg_descriptions, write_with_aliases
 from ..log import debug, get_logger, info, stopwatch, warning
 from .georef import (check_product, check_raw_input, require_variables,
@@ -447,10 +448,10 @@ def _elements_multipatch(cfg, grid, nc, its, times, xs, ys, zs, zen, az,
         warning("[surfaces] {} has no .prj - the CRS was not written.",
                 path.name)
     fmap = path.with_name(path.stem + "_fields.csv")
-    with open(fmap, "w", encoding="utf-8") as f:
-        f.write("field,variable,time,record\n")
+    with CsvOut(fmap, cfg["csv_format"]) as w:
+        w.row(["field", "variable", "time", "record"])
         for row in rows:
-            f.write("{},{},{},{}\n".format(*row))
+            w.row(row)
     for field, name, stamp, _it in rows[:len(plan)]:
         debug("[surfaces] {}: {} at {}", field, name, stamp)
     debug("[surfaces] {}: {} variables x {} records as fields, map in {}",

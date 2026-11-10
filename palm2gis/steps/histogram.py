@@ -16,10 +16,10 @@ The percentiles come from a fine histogram (FINE_BINS bins between the
 full-run min and max), so each is exact to (max - min) / FINE_BINS.
 """
 
-import csv
 
 import numpy as np
 
+from ..csvfile import CsvOut
 from ..log import debug, info
 
 FINE_BINS = 4000         # percentile resolution: (max - min) / FINE_BINS
@@ -104,35 +104,34 @@ def voxel_statistics(fout, names, n_rec, ranges, fill):
 # ------------------------------
 # 3. SIDECAR FILES
 # ------------------------------
-def write_sidecars(stats, voxel_path, n_rec):
+def write_sidecars(stats, voxel_path, n_rec, csv_format="excel_cz"):
     """<stem>_ranges.csv, <stem>_histogram.csv and, with matplotlib,
-    <stem>_histogram.png next to the voxel file. Returns the paths."""
+    <stem>_histogram.png next to the voxel file. Returns the paths.
+    `csv_format` is advanced.csv_format (see palm2gis.csvfile)."""
     if not stats:
         return []
     stem = voxel_path.with_suffix("")
     out = []
 
     p_ranges = stem.with_name(stem.name + "_ranges.csv")
-    with open(p_ranges, "w", newline="", encoding="utf-8") as f:
-        w = csv.writer(f)
-        w.writerow(["variable", "units", "min"]
-                   + ["p{}".format(p) for p in PERCENTILES]
-                   + ["max", "suggested_min", "suggested_max"])
+    with CsvOut(p_ranges, csv_format) as w:
+        w.row(["variable", "units", "min"]
+              + ["p{}".format(p) for p in PERCENTILES]
+              + ["max", "suggested_min", "suggested_max"])
         for var, s in stats.items():
-            w.writerow([var, s["units"], _g(s["min"])]
-                       + [_g(s["pct"][p]) for p in PERCENTILES]
-                       + [_g(s["max"]), _g(s["pct"][DISPLAY[0]]),
-                          _g(s["pct"][DISPLAY[1]])])
+            w.row([var, s["units"], float(s["min"])]
+                  + [float(s["pct"][p]) for p in PERCENTILES]
+                  + [float(s["max"]), float(s["pct"][DISPLAY[0]]),
+                     float(s["pct"][DISPLAY[1]])])
     out.append(p_ranges)
 
     p_hist = stem.with_name(stem.name + "_histogram.csv")
-    with open(p_hist, "w", newline="", encoding="utf-8") as f:
-        w = csv.writer(f)
-        w.writerow(["variable", "units", "bin_lo", "bin_hi", "count"])
+    with CsvOut(p_hist, csv_format) as w:
+        w.row(["variable", "units", "bin_lo", "bin_hi", "count"])
         for var, s in stats.items():
             e, c = coarse(s["edges"], s["counts"])
             for a, b, n in zip(e[:-1], e[1:], c):
-                w.writerow([var, s["units"], _g(a), _g(b), int(n)])
+                w.row([var, s["units"], float(a), float(b), int(n)])
     out.append(p_hist)
 
     png = _plot(stats, stem.with_name(stem.name + "_histogram.png"), n_rec)
@@ -140,9 +139,6 @@ def write_sidecars(stats, voxel_path, n_rec):
         out.append(png)
     return out
 
-
-def _g(x):
-    return "{:.6g}".format(x)
 
 
 def _plot(stats, path, n_rec):

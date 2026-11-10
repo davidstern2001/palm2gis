@@ -396,16 +396,22 @@ def verify_outputs(out):
               "voxel: actual_range covers all records (wider than the "
               "first)", failures)
 
-    import csv as _csv
-    with open(out / "test_voxel_ranges.csv", newline="") as f:
-        rows = {r["variable"]: r for r in _csv.DictReader(f)}
+    from palm2gis.csvfile import read_rows
+    table, delim = read_rows(out / "test_voxel_ranges.csv")
+    head = table[0]
+    rows = {r[0]: dict(zip(head, r)) for r in table[1:]}
     check(set(rows) >= {"u", "v", "w", "theta"}
-          and all(float(r["min"]) <= float(r["suggested_min"])
-                  <= float(r["suggested_max"]) <= float(r["max"])
-                  for r in rows.values())
+          and all(r["min"] <= r["suggested_min"] <= r["suggested_max"]
+                  <= r["max"] for r in rows.values())
           and (out / "test_voxel_histogram.csv").exists(),
           "voxel: ranges and histogram CSVs written, min <= p2 <= p98 <= max",
           failures)
+    raw = (out / "test_voxel_ranges.csv").read_bytes()
+    line2 = raw.decode("utf-8-sig").splitlines()[1]
+    check(raw.startswith(b"\xef\xbb\xbf") and delim == ";"
+          and "," in line2 and "." not in line2.split(";", 2)[2],
+          f"csv: default excel_cz - ';' between fields, decimal comma, "
+          f"UTF-8 BOM ({line2[:40]}...)", failures)
 
     # -- derived air temperature -------------------------------------------
     # PALM's basic state: Pi linear in z, (p_s/p0)^kappa at z = 0, slope
@@ -858,15 +864,16 @@ def verify_regressions(tmp, out, pipeline_main):
           f"multipatch: one feature per element ({len(mp)} of {n_elem}), "
           f"every orientation, 2 variables x {NT} records as fields, DBF "
           f"names", failures)
-    import csv as _csv
-    with open(out / "test_surfaces_fields.csv", encoding="utf-8") as f:
-        fmap = list(_csv.DictReader(f))
+    from palm2gis.csvfile import read_rows
+    _ft, _fd = read_rows(out / "test_surfaces_fields.csv")
+    fmap = [dict(zip(_ft[0], r)) for r in _ft[1:]]
     check([r["field"] for r in fmap] == vcols,
           "multipatch: the field map lists every value field", failures)
     # every value field equals the geodatabase at that record
     ok = True
     for r in fmap:
-        ref = fg_all[fg_all["rec"] == int(r["record"])].set_index("elem_id")
+        ref = fg_all[fg_all["rec"] == int(float(r["record"]))].set_index(
+            "elem_id")
         ref = ref[r["variable"]].reindex(mp["elem_id"]).to_numpy()
         got = mp[r["field"]].to_numpy()
         ok &= bool(_np.allclose(_np.where(_np.isfinite(ref), ref, -9999.0),
@@ -1684,6 +1691,28 @@ advanced:
     check(rc != 0 and not (tmp / "out_wind_bigstep" / "test_wind.nc").exists(),
           "wind: a height_step with no multiple in the range stops the run "
           "with a message", failures)
+
+    # advanced.csv_format: standard -> ',' and '.', no BOM
+    std = tmp / "config_csv_std.yaml"
+    assert "advanced:\n" in base, "test fixture changed"
+    std.write_text(base.replace("./out_new", "./out_csv_std")
+                   .replace("advanced:\n", "advanced:\n    csv_format: standard\n",
+                            1))
+    rc = pipeline_main(["-c", str(std), "--stages", "voxel"])
+    raw = (tmp / "out_csv_std" / "test_voxel_ranges.csv").read_bytes()
+    lines = raw.decode("utf-8").splitlines()
+    from palm2gis.csvfile import read_rows
+    tab, dl = read_rows(tmp / "out_csv_std" / "test_voxel_ranges.csv")
+    check(rc == 0 and not raw.startswith(b"\xef\xbb\xbf") and dl == ","
+          and lines[0].startswith("variable,units,min,")
+          and ";" not in raw.decode("utf-8")
+          and all(isinstance(v, float) for v in tab[1][2:]),
+          f"csv: csv_format standard - ',' and decimal point, no BOM "
+          f"({lines[1][:40]}...)", failures)
+    rejects(base.replace("advanced:\n", "advanced:\n    csv_format: excel\n",
+                         1),
+            "excel_cz or standard", "layout: an unknown csv_format is "
+                                    "rejected")
 
     # air temperature alone is a valid voxel request
     ta_only = tmp / "config_ta_only.yaml"

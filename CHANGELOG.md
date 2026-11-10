@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.39.0
+
+**CSV files open in columns in a Czech Excel** *(changes the CSV format)*
+
+- The CSV files palm2gis writes (`<name>_voxel_ranges.csv`,
+  `<name>_voxel_histogram.csv`, the MultiPatch `<name>_fields.csv`) now
+  use `;` between fields, a decimal comma and UTF-8 with a byte-order
+  mark by default (`advanced.csv_format: excel_cz`). Comma-separated, a
+  Czech or other European Excel put each whole line into column A and
+  read `19.44` as text or a date.
+- `advanced.csv_format: standard` (legacy top-level `csv_format`) keeps
+  `,` and a decimal point, for English Excel, pandas, R and scripts.
+- Numbers keep 6 significant digits in both formats.
+
 ## 0.38.0
 
 **Wind heights every n metres** *(new setting)*
