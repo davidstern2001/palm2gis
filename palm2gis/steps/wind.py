@@ -21,7 +21,7 @@ from shapely.geometry import LineString
 from ..descriptions import long_name, write_gpkg_descriptions
 from ..log import debug, get_logger, info, stopwatch, warning
 from .georef import (check_product, check_raw_input, require_variables,
-                     resolve_z_range, select_times)
+                     require_zu_axis, resolve_z_range, select_times)
 from .qgis_style import embed_gpkg_style, vector_qml, write_sidecar
 from .voxel import destagger, write_crs_var
 
@@ -407,6 +407,7 @@ def stage_wind(cfg, grid):
             hint="wind needs u and v together, which among the splitvar "
                  "outputs only the grouped u/v/w file has "
                  "(steps.splitvar.group_vars).")
+        require_zu_axis(nc, "wind", wd["file_from"])
         z = np.asarray(nc.variables["zu_3d"][:], dtype="f8")
         heights = _heights(cfg, grid, nc, z)
         if wd["grid_to"]:

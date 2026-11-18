@@ -1062,6 +1062,69 @@ def verify_regressions(tmp, out, pipeline_main):
     check(ok and cx.size < fx.size,
           "wind grid: geolocation and values match the full grid under a "
           "cut", failures)
+
+    failures += _verify_missing_zu_axis(tmp)
+    return failures
+
+
+def _verify_missing_zu_axis(tmp):
+    """A file without a `zu_3d` variable stopped voxel and wind with a
+    bare `KeyError: 'zu_3d'`. Each way of getting there must now say what
+    the file is and what to do instead."""
+    from netCDF4 import Dataset
+    from palm2gis.steps.georef import check_product, require_zu_axis
+
+    def build(name, dims, var_dims):
+        p = tmp / name
+        with Dataset(p, "w", format="NETCDF4") as nc:
+            for d, n in dims.items():
+                nc.createDimension(d, n)
+            nc.createVariable("time", "f8", ("time",))[:] = [0.0]
+            for v, vd in var_dims.items():
+                nc.createVariable(v, "f4", vd)[:] = 0.0
+        return p
+
+    def message(p, fn):
+        with Dataset(p) as nc:
+            try:
+                fn(nc)
+            except RuntimeError as exc:
+                return str(exc)
+            except Exception as exc:
+                return "unexpected {}: {}".format(type(exc).__name__, exc)
+        return ""
+
+    failures = []
+    nz = {"time": 1, "y": NY, "x": NX}
+    p = build("zu_no_var", dict(nz, zu_3d=NZ),
+              {"theta": ("time", "zu_3d", "y", "x")})
+    msg = message(p, lambda nc: require_zu_axis(nc, "voxel", p.name))
+    check("coordinate variable" in msg,
+          "zu_3d: a dropped coordinate variable is named as the cause",
+          failures)
+
+    p = build("w_only", dict(nz, zw_3d=NZ),
+              {"zw_3d": ("zw_3d",), "w": ("time", "zw_3d", "y", "x")})
+    msg = message(p, lambda nc: require_zu_axis(nc, "voxel", p.name))
+    check("only vertical axis is zw_3d" in msg and "holds w" in msg,
+          "zu_3d: a w-only file is recognised as such", failures)
+
+    p = build("xy_2d", dict(nz, zu_xy=2, zu1_xy=1),
+              {"zu_xy": ("zu_xy",), "theta_xy": ("time", "zu_xy", "y", "x")})
+    msg = message(p, lambda nc: check_product(nc, "voxel", p.name))
+    check("2D cross-section output" in msg,
+          "zu_3d: a 2D cross-section file is rejected as the wrong product",
+          failures)
+    msg = message(p, lambda nc: require_zu_axis(nc, "wind", p.name))
+    check("not PALM 3D output" in msg and "zu_xy" in msg,
+          "zu_3d: a file with no 3D vertical axis names the axes it has",
+          failures)
+
+    msg = message(tmp / "test_3d",
+                  lambda nc: (check_product(nc, "voxel"),
+                              require_zu_axis(nc, "voxel")))
+    check(msg == "", "zu_3d: the real 3D output passes both checks",
+          failures)
     return failures
 
 

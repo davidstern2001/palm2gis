@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.39.1
+
+**A file without `zu_3d` says why instead of `KeyError: 'zu_3d'`** *(fix)*
+
+- voxel and wind read the level heights from the `zu_3d` variable before
+  any of their checks ran, so a 3D-input file without it stopped the
+  stage with a bare `Stage voxel failed: 'zu_3d'`. They now stop with a
+  message that names the cause:
+  - the `zu_3d` dimension is there but its coordinate variable is not
+    (dropped by a tool that rewrote the file: CDO, NCO, xarray ...);
+  - the only vertical axis is `zw_3d` (a palm_postproc splitvar file of
+    `w` alone): read the grouped u/v/w file or the joined file;
+  - no 3D vertical axis at all: the file is not PALM 3D output.
+- PALM's 2D cross-section output (`DATA_2D_XY/XZ/YZ_NETCDF*`, on
+  `zu_xy`, `zu_xz`, `zu_yz`) is recognised and rejected as the wrong
+  product at the start of voxel and wind, like the surface output and the
+  static driver already were.
+
 ## 0.39.0
 
 **CSV files open in columns in a Czech Excel** *(changes the CSV format)*

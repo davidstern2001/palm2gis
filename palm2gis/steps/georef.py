@@ -1035,7 +1035,15 @@ PRODUCTS = {
                 "dimension"),
     "static": ("static driver", "*_static*",
                "the domain description: zt, buildings, lad - no time axis"),
+    "2d": ("2D cross-section output", "DATA_2D_XY/XZ/YZ_NETCDF*",
+           "single slices on zu_xy, zu_xz or zu_yz, not a volume"),
 }
+
+# Vertical dimensions of PALM's 2D cross-section output. Such a file has
+# x, y and time like the 3D output, so it used to pass as "unrecognised"
+# and fail later with a bare KeyError: 'zu_3d'.
+_CROSS_SECTION_DIMS = {"zu_xy", "zw_xy", "zu1_xy", "zu_xz", "zw_xz",
+                       "zu_yz", "zw_yz"}
 
 STAGE_PRODUCT = {"voxel": "3d", "wind": "3d", "surfaces": "surface",
                  "canopy": "static"}
@@ -1048,6 +1056,8 @@ def identify_product(nc):
         return "surface"
     if {"zu_3d", "zw_3d"} & dims:
         return "3d"
+    if _CROSS_SECTION_DIMS & dims:
+        return "2d"
     if "zlad" in dims or ("time" not in dims and "x" in dims):
         return "static"
     return None
@@ -1113,6 +1123,43 @@ def resolve_z_range(nc, grid, tag, z_coord="zu_3d"):
               "(nz/dz would have given [{}:{}])",
               label, nz0, nzmax, grid.nz0, grid.nzmax)
     return nz0, nzmax
+
+
+def require_zu_axis(nc, tag, source=""):
+    """Raise a readable error when *nc* has no `zu_3d` variable.
+
+    voxel and wind take the height of every level from it. Without this
+    guard a file lacking it stopped the stage with a bare `KeyError:
+    'zu_3d'`, which names neither the cause nor the fix.
+    """
+    if "zu_3d" in nc.variables:
+        return
+    dims = set(nc.dimensions)
+    if "zu_3d" in dims:
+        why = ("It has the zu_3d DIMENSION but not the zu_3d coordinate "
+               "variable that holds the level heights: a tool that "
+               "rewrote the file (CDO, NCO, xarray ...) dropped it. Use "
+               "the file as PALM or palm_postproc wrote it, or keep the "
+               "coordinate variables when rewriting it.")
+    elif "zw_3d" in dims:
+        on_w = sorted(n for n, v in nc.variables.items()
+                      if "zw_3d" in v.dimensions and n != "zw_3d")
+        why = ("Its only vertical axis is zw_3d, the w levels; it holds "
+               "{} and nothing on the scalar levels. A palm_postproc "
+               "splitvar file of w alone looks like this. Read the "
+               "grouped u/v/w file (steps.splitvar.group_vars) or the "
+               "joined file instead.".format(
+                   ", ".join(on_w) or "no variables on them"))
+    else:
+        z_dims = sorted(d for d in dims if d.startswith("z"))
+        why = ("It has no 3D vertical axis at all (vertical dimensions: "
+               "{}), so it is not PALM 3D output. Point input.data_3d at "
+               "the DATA_3D_NETCDF* file.".format(
+                   ", ".join(z_dims) or "none"))
+    raise RuntimeError(
+        "[{}] this file has no 'zu_3d' variable, the heights of PALM's "
+        "scalar levels, which the {} stage needs.\n  {}{}".format(
+            tag, tag, why, "\n  Given: {}".format(source) if source else ""))
 
 
 def require_variables(nc, names, tag, source="", hint=""):

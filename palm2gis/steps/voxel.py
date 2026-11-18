@@ -30,7 +30,7 @@ from ..descriptions import long_name
 from ..log import debug, get_logger, info, stopwatch, warning
 from .histogram import voxel_statistics, write_sidecars
 from .georef import (check_product, check_raw_input, require_variables,
-                     resolve_z_range, select_times)
+                     require_zu_axis, resolve_z_range, select_times)
 from .thermo import absolute_humidity, convert_temperature, \
     exner_basic_state, humidity_scale, is_celsius_exempt, is_temperature, \
     pressure_from_exner, temperature_scale, theta_to_ta
@@ -185,6 +185,7 @@ def stage_voxel(cfg, grid):
         check_raw_input(nc, grid, "voxel", vx["file_from"])
         its, times = select_times(cfg, nc, "voxel", grid, cfg["voxel"]["file_from"])
 
+        require_zu_axis(nc, "voxel", vx["file_from"])
         z_all = np.asarray(nc.variables["zu_3d"][:])
         nz0_f, nzmax_f = resolve_z_range(nc, grid, "voxel")
         k_off = 1 if (vx["drop_k0"] and nz0_f == 0) else 0
