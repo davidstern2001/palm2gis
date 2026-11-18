@@ -2,21 +2,24 @@
 
 ## 0.39.1
 
-**A file without `zu_3d` says why instead of `KeyError: 'zu_3d'`** *(fix)*
+**3D output with `zu`/`zw` axes is read** *(fix)*
 
-- voxel and wind read the level heights from the `zu_3d` variable before
-  any of their checks ran, so a 3D-input file without it stopped the
-  stage with a bare `Stage voxel failed: 'zu_3d'`. They now stop with a
-  message that names the cause:
-  - the `zu_3d` dimension is there but its coordinate variable is not
+- Newer PALM (the data-output module) writes the 3D vertical axes as
+  `zu` / `zw` instead of `zu_3d` / `zw_3d`. palm2gis knew only the old
+  names, so voxel stopped on such a file with a bare
+  `Stage voxel failed: 'zu_3d'`. voxel, wind and the basic-state
+  cross-check now accept either naming; the output is identical.
+- A 3D-input file with neither axis now stops voxel and wind with a
+  message naming the cause instead of a `KeyError`:
+  - the axis dimension is there but its coordinate variable is not
     (dropped by a tool that rewrote the file: CDO, NCO, xarray ...);
-  - the only vertical axis is `zw_3d` (a palm_postproc splitvar file of
-    `w` alone): read the grouped u/v/w file or the joined file;
+  - the only vertical axis is the w axis (a palm_postproc splitvar file
+    of `w` alone): read the grouped u/v/w file or the joined file;
   - no 3D vertical axis at all: the file is not PALM 3D output.
 - PALM's 2D cross-section output (`DATA_2D_XY/XZ/YZ_NETCDF*`, on
   `zu_xy`, `zu_xz`, `zu_yz`) is recognised and rejected as the wrong
-  product at the start of voxel and wind, like the surface output and the
-  static driver already were.
+  product at the start of voxel and wind.
+- `diagnose.py` lists `zu` / `zw` among the coordinates it checks.
 
 ## 0.39.0
 

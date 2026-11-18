@@ -185,9 +185,9 @@ def stage_voxel(cfg, grid):
         check_raw_input(nc, grid, "voxel", vx["file_from"])
         its, times = select_times(cfg, nc, "voxel", grid, cfg["voxel"]["file_from"])
 
-        require_zu_axis(nc, "voxel", vx["file_from"])
-        z_all = np.asarray(nc.variables["zu_3d"][:])
-        nz0_f, nzmax_f = resolve_z_range(nc, grid, "voxel")
+        zu_name, zw_name = require_zu_axis(nc, "voxel", vx["file_from"])
+        z_all = np.asarray(nc.variables[zu_name][:])
+        nz0_f, nzmax_f = resolve_z_range(nc, grid, "voxel", zu_name)
         k_off = 1 if (vx["drop_k0"] and nz0_f == 0) else 0
         kz0, kzmax = nz0_f + k_off, nzmax_f
         # Two z arrays, deliberately.
@@ -290,16 +290,17 @@ def stage_voxel(cfg, grid):
         # file could arrive with zu_3d and zw_3d of different lengths and
         # the terrain mask then failed with a bare numpy boolean-index
         # error deep in the write loop.
-        if need_uvw and "zw_3d" in nc.variables:
-            n_zu = nc.variables["zu_3d"].size
-            n_zw = nc.variables["zw_3d"].size
+        if need_uvw and zw_name in nc.variables:
+            n_zu = nc.variables[zu_name].size
+            n_zw = nc.variables[zw_name].size
             if n_zu != n_zw:
                 raise RuntimeError(
-                    "[voxel] zu_3d has {} levels but zw_3d has {}. The "
+                    "[voxel] {} has {} levels but {} has {}. The "
                     "staggered axes have been cut to different lengths, "
                     "which happens when palm_postproc splitz slices only "
                     "one of them. Read the joined file, or re-run splitz "
-                    "so both axes are cut alike.".format(n_zu, n_zw))
+                    "so both axes are cut alike.".format(
+                        zu_name, n_zu, zw_name, n_zw))
 
         out_vars = (["u", "v", "w"] if do_velocity else []) + scalars
         if derive_ta:

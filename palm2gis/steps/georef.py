@@ -356,14 +356,15 @@ def calibrate_basic_state(cfg, explicit=None):
         return
     try:
         with Dataset(path, "r") as nc:
-            if not {"ta", "theta", "zu_3d"} <= set(nc.variables):
+            axes = z_axes(nc)
+            if axes is None or not {"ta", "theta"} <= set(nc.variables):
                 debug("[static] {} lacks ta, theta or zu_3d - basic state "
                       "not cross-checked.", cfg_disp_path(path))
                 return
             v_ta, v_th = nc.variables["ta"], nc.variables["theta"]
             if v_ta.ndim != 4 or v_ta.shape != v_th.shape:
                 return
-            z = np.asarray(nc.variables["zu_3d"][:], dtype="f8")
+            z = np.asarray(nc.variables[axes[0]][:], dtype="f8")
             ks = np.where(z > 0)[0]
             if ks.size < 2:
                 return
@@ -1029,7 +1030,7 @@ _COORD_EVIDENCE_PREFIXES = ("theta", "tsurf", "t_surf")
 # 3D file, surfaces wants the SURFACE_DATA one".
 PRODUCTS = {
     "3d": ("3D output", "DATA_3D_NETCDF*",
-           "gridded volume: dimensions x, y, zu_3d/zw_3d"),
+           "gridded volume: dimensions x, y, zu_3d/zw_3d (or zu/zw)"),
     "surface": ("surface output", "SURFACE_DATA_NETCDF*",
                 "unstructured surface elements listed along the s "
                 "dimension"),
@@ -1055,6 +1056,9 @@ def identify_product(nc):
     if "s" in dims and "x" not in dims:
         return "surface"
     if {"zu_3d", "zw_3d"} & dims:
+        return "3d"
+    # Newer PALM (data-output module) names the 3D axes zu / zw.
+    if {"zu", "zw"} & dims and {"x", "y"} <= dims:
         return "3d"
     if _CROSS_SECTION_DIMS & dims:
         return "2d"
@@ -1089,7 +1093,7 @@ def check_product(nc, tag, source=""):
             src="\n  Given: {}".format(source) if source else ""))
 
 
-def resolve_z_range(nc, grid, tag, z_coord="zu_3d"):
+def resolve_z_range(nc, grid, tag, z_coord=None):
     """Vertical index range for *nc*, against the FILE's own z axis.
 
     grid.nz0 / grid.nzmax come from `nz` and `dz`, i.e. from the FULL
@@ -1104,6 +1108,8 @@ def resolve_z_range(nc, grid, tag, z_coord="zu_3d"):
     file has no usable z axis.
     """
     label = "[{}] ".format(tag) if tag else ""
+    if z_coord is None:
+        z_coord = (z_axes(nc) or ("zu_3d",))[0]
     if z_coord not in nc.variables:
         return grid.nz0, grid.nzmax
 
@@ -1125,31 +1131,52 @@ def resolve_z_range(nc, grid, tag, z_coord="zu_3d"):
     return nz0, nzmax
 
 
-def require_zu_axis(nc, tag, source=""):
-    """Raise a readable error when *nc* has no `zu_3d` variable.
+# PALM's vertical axes in the 3D output, in the two namings PALM has used:
+# the legacy netCDF interface writes zu_3d / zw_3d, the newer data-output
+# module (DOM) writes zu / zw. Same levels, same meaning.
+Z_AXIS_NAMES = (("zu_3d", "zw_3d"), ("zu", "zw"))
 
-    voxel and wind take the height of every level from it. Without this
-    guard a file lacking it stopped the stage with a bare `KeyError:
-    'zu_3d'`, which names neither the cause nor the fix.
+
+def z_axes(nc):
+    """(zu, zw) names of the 3D vertical axes in *nc*, or None.
+
+    The scalar axis must be a coordinate VARIABLE (it carries the level
+    heights); the w axis name is returned whether or not the file has it.
     """
-    if "zu_3d" in nc.variables:
-        return
+    for zu, zw in Z_AXIS_NAMES:
+        if zu in nc.variables and zu in nc.dimensions:
+            return zu, zw
+    return None
+
+
+def require_zu_axis(nc, tag, source=""):
+    """Return the (zu, zw) axis names, or raise a readable error.
+
+    voxel and wind take the height of every level from the scalar axis.
+    Without this guard a file lacking it stopped the stage with a bare
+    `KeyError: 'zu_3d'`, which names neither the cause nor the fix.
+    """
+    axes = z_axes(nc)
+    if axes is not None:
+        return axes
     dims = set(nc.dimensions)
-    if "zu_3d" in dims:
-        why = ("It has the zu_3d DIMENSION but not the zu_3d coordinate "
+    zu_dim = next((zu for zu, _ in Z_AXIS_NAMES if zu in dims), None)
+    zw_dim = next((zw for _, zw in Z_AXIS_NAMES if zw in dims), None)
+    if zu_dim:
+        why = ("It has the {0} DIMENSION but not the {0} coordinate "
                "variable that holds the level heights: a tool that "
                "rewrote the file (CDO, NCO, xarray ...) dropped it. Use "
                "the file as PALM or palm_postproc wrote it, or keep the "
-               "coordinate variables when rewriting it.")
-    elif "zw_3d" in dims:
+               "coordinate variables when rewriting it.".format(zu_dim))
+    elif zw_dim:
         on_w = sorted(n for n, v in nc.variables.items()
-                      if "zw_3d" in v.dimensions and n != "zw_3d")
-        why = ("Its only vertical axis is zw_3d, the w levels; it holds "
+                      if zw_dim in v.dimensions and n != zw_dim)
+        why = ("Its only vertical axis is {}, the w levels; it holds "
                "{} and nothing on the scalar levels. A palm_postproc "
                "splitvar file of w alone looks like this. Read the "
                "grouped u/v/w file (steps.splitvar.group_vars) or the "
                "joined file instead.".format(
-                   ", ".join(on_w) or "no variables on them"))
+                   zw_dim, ", ".join(on_w) or "no variables on them"))
     else:
         z_dims = sorted(d for d in dims if d.startswith("z"))
         why = ("It has no 3D vertical axis at all (vertical dimensions: "
@@ -1157,8 +1184,8 @@ def require_zu_axis(nc, tag, source=""):
                "the DATA_3D_NETCDF* file.".format(
                    ", ".join(z_dims) or "none"))
     raise RuntimeError(
-        "[{}] this file has no 'zu_3d' variable, the heights of PALM's "
-        "scalar levels, which the {} stage needs.\n  {}{}".format(
+        "[{}] this file has no 'zu_3d' (or 'zu') variable, the heights of "
+        "PALM's scalar levels, which the {} stage needs.\n  {}{}".format(
             tag, tag, why, "\n  Given: {}".format(source) if source else ""))
 
 

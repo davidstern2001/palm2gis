@@ -1064,6 +1064,57 @@ def verify_regressions(tmp, out, pipeline_main):
           "cut", failures)
 
     failures += _verify_missing_zu_axis(tmp)
+    failures += _verify_dom_axis_names(tmp, out, pipeline_main)
+    return failures
+
+
+def _verify_dom_axis_names(tmp, out, pipeline_main):
+    """Newer PALM (data-output module) names the 3D axes zu / zw instead
+    of zu_3d / zw_3d. Such a file stopped voxel with `KeyError: 'zu_3d'`;
+    it must give the same voxel and wind output as the legacy naming."""
+    import shutil as _sh
+    import numpy as _np
+    from netCDF4 import Dataset
+
+    failures = []
+    # Written afresh: renaming a coordinate variable in place in a NETCDF4
+    # file loses its values (netCDF-C), which would test nothing.
+    ren = {"zu_3d": "zu", "zw_3d": "zw"}
+    with Dataset(tmp / "test_3d") as a, \
+            Dataset(tmp / "test_3d_dom", "w", format="NETCDF4") as b:
+        for d, dim in a.dimensions.items():
+            b.createDimension(ren.get(d, d), len(dim))
+        for n, v in a.variables.items():
+            w = b.createVariable(ren.get(n, n), v.dtype,
+                                 tuple(ren.get(d, d) for d in v.dimensions),
+                                 fill_value=getattr(v, "_FillValue", None))
+            w.setncatts({k: v.getncattr(k) for k in v.ncattrs()
+                         if k != "_FillValue"})
+            w[:] = v[:]
+    cfg = tmp / "config_dom.yaml"
+    cfg.write_text(
+        (tmp / "config.yaml").read_text()
+        .replace("file_from: test_3d", "file_from: test_3d_dom")
+        .replace("file_to: test_voxel.nc", "file_to: test_voxel_dom.nc")
+        .replace("grid_to: test_wind.nc", "grid_to: test_wind_dom.nc")
+        .replace("file_to: test_wind.gpkg", "file_to: test_wind_dom.gpkg"))
+    rc = pipeline_main(["-c", str(cfg), "--stages", "voxel", "wind",
+                        "--overwrite"])
+    check(rc == 0, "zu/zw: voxel and wind accept the DOM axis names",
+          failures)
+    if rc != 0:
+        return failures
+    with Dataset(out / "test_voxel.nc") as a, \
+            Dataset(out / "test_voxel_dom.nc") as b:
+        same = all(_np.ma.allequal(a[v][:], b[v][:])
+                   for v in ("z", "u", "v", "w", "theta", "ta"))
+    check(same, "zu/zw: the voxel output matches the zu_3d/zw_3d file",
+          failures)
+    with Dataset(out / "test_wind" / "test_wind_z180m.nc") as a, \
+            Dataset(out / "test_wind_dom" / "test_wind_dom_z180m.nc") as b:
+        same = _np.ma.allequal(a["u"][:], b["u"][:])
+    check(same, "zu/zw: the wind output matches the zu_3d/zw_3d file",
+          failures)
     return failures
 
 

@@ -119,7 +119,8 @@ def report_input_file(cfg, path, label):
             print(f"    {name:<18} {str(v.dimensions):<42} "
                   f"{getattr(v, 'units', '')}")
         # coordinate sanity
-        for c in ("x", "y", "xu", "yv", "zu_3d", "zw_3d", "xs", "ys", "zs"):
+        for c in ("x", "y", "xu", "yv", "zu_3d", "zw_3d", "zu", "zw", "xs", "ys",
+                  "zs"):
             if c in nc.variables:
                 a = np.asarray(nc.variables[c][:]).ravel()
                 print(f"  coord {c:<6} n={a.size:<8} "

@@ -407,8 +407,8 @@ def stage_wind(cfg, grid):
             hint="wind needs u and v together, which among the splitvar "
                  "outputs only the grouped u/v/w file has "
                  "(steps.splitvar.group_vars).")
-        require_zu_axis(nc, "wind", wd["file_from"])
-        z = np.asarray(nc.variables["zu_3d"][:], dtype="f8")
+        zu_name, _ = require_zu_axis(nc, "wind", wd["file_from"])
+        z = np.asarray(nc.variables[zu_name][:], dtype="f8")
         heights = _heights(cfg, grid, nc, z)
         if wd["grid_to"]:
             _wind_levels(cfg, grid, nc, its, times, z, heights)
